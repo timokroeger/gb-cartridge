@@ -1,0 +1,15 @@
+{
+  signal: [
+    {name: 'CLK 4MHz',      wave: 'lhlhlhlhlh'},
+    {name: 'CLK 1MHz',      wave: 'lh...l...h'},
+    {name: 'A0-14 ',        wave: 'x.=......x', data: 'addr'},
+    {name: 'A15/#CS',       wave: '1..0......', data: 'addr'},
+    {name: '#RD (read)',    wave: '0.........'},
+    {name: '#WR (read)',    wave: '1.........', node: '.......A'},
+    {name: 'D0-D7 (read)',  wave: 'u..=.....u', data: 'data'},
+    {name: '#RD (write)',   wave: '0.1......0', node: '.......B'},
+    {name: '#WR (write)',   wave: '1....0..1.'},
+    {name: 'D0-D7 (write)', wave: 'u.1..=...u', data: 'data'},
+  ],
+  edge: ['A-B sampled']
+}
