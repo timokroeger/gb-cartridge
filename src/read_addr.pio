@@ -1,0 +1,15 @@
+; TODO: License
+
+.program read_addr
+
+; IN pins:
+; 0-7 Multiplexed cartridge signals
+
+; OUT pins:
+; 0 Data transceiver direction (low = input, high = output)
+; 1 Data transceiver #OE (low = enabled, high = disabled)
+; 2 Address low transceiver #OE (low = enabled, high = disabled)
+; 3 Address high transceiver #OE (low = enabled, high = disabled)
+; 4 CLK, A15, #CS, #WR transceiver #OE (low = enabled, high = disabled)
+
+; TODO
