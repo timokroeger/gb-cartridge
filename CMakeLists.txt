@@ -13,7 +13,10 @@ add_executable(gb-cartridge
     src/roms/dummy.c
 )
 
-target_link_libraries(gb-cartridge pico_stdlib)
+target_link_libraries(gb-cartridge
+    pico_stdlib
+    hardware_dma
+)
 
-pico_set_binary_type(gb-cartridge no_flash)
+pico_set_binary_type(gb-cartridge copy_to_ram)
 pico_add_extra_outputs(gb-cartridge)
