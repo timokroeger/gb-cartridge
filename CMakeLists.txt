@@ -8,14 +8,18 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
-add_executable(gb-cartridge
-    src/main.c
-    src/roms/dummy.c
-)
+add_executable(gb-cartridge)
 
 pico_generate_pio_header(gb-cartridge
     ${CMAKE_CURRENT_LIST_DIR}/src/read_addr.pio
 )
+
+target_sources(gb-cartridge PRIVATE
+    src/main.c
+    src/roms/dummy.c
+)
+
+target_include_directories(gb-cartridge PRIVATE src)
 
 target_link_libraries(gb-cartridge
     pico_stdlib

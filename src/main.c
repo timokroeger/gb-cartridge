@@ -10,18 +10,10 @@
 #include "hardware/dma.h"
 #include "pico/stdlib.h"
 #include "read_addr.pio.h"
-
-// Just enough for simple games like Tetris or Dr. Mario.
-#define ROM_SIZE (32 * 1024)
-
-// Multiplexed cartridge pins
-#define PIN_CARTRIDGE_BASE 0
-
-// OE and DIR pins of the transceivers
-#define PIN_CONTROL_BASE
+#include "config.h"
 
 // TODO: Move to QSPI flash
-extern uint8_t g_rom[ROM_SIZE] __attribute__((aligned(ROM_SIZE)));
+extern uint8_t g_rom[ROM_SIZE];
 
 static void pio_init_gpio(PIO pio) {
   for (int i = 0; i < 8; i++) {
@@ -35,7 +27,6 @@ static void pio_init_gpio(PIO pio) {
 
 static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
                      volatile void *data_fifo, uintptr_t rom_addr) {
-  printf("ROM base: %p\n", rom_addr);
   assert((rom_addr % ROM_SIZE) == 0 && "GB ROM memory is not aligned properly");
 
   // Make it live forever so that DMA can use it.
