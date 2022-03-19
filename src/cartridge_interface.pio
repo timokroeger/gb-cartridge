@@ -90,7 +90,16 @@ wait_data:
 .program memory_benchmark
 .side_set 1
 
+    set x, 0x5 side 0
+    in x, 4 side 1
+    in x, 4 side 0
+    in x, 4 side 1
+    in x, 4 side 0
+    in null, 16 side 1
+
+.wrap_target
     nop  side 0 [15]
     push side 1
     pull side 1
-    nop  side 0
+    nop  side 0 [15]
+.wrap

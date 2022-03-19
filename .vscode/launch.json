@@ -11,8 +11,8 @@
             "executable": "./build/gb-cartridge.elf",
             "request": "launch",
             "type": "cortex-debug",
-            "svdFile": "../../pico-sdk/src/rp2040/hardware_regs/rp2040.svd",
             "runToMain": true,
+            "svdFile": "../pico-sdk/src/rp2040/hardware_regs/rp2040.svd",
             "servertype": "jlink",
             "device": "RP2040_M0_0",
             "overrideLaunchCommands": [

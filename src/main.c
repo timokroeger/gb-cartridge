@@ -1,20 +1,24 @@
 // TODO: License Header
 
-#if !PICO_NO_FLASH && !PICO_COPY_TO_RAM
-#error "code must execute from RAM for predictable flash access times"
-#endif
+// #if !PICO_NO_FLASH && !PICO_COPY_TO_RAM
+// #error "code must execute from RAM for predictable flash access times"
+// #endif
 
 #include <assert.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "cartridge_interface.pio.h"
 #include "config.h"
+#include "hardware/clocks.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
+#include "hardware/pll.h"
 #include "pico/stdlib.h"
 
-// TODO: Move to QSPI flash
-extern uint8_t g_rom[ROM_SIZE];
+const uint8_t g_rom[ROM_SIZE] __attribute__((aligned(ROM_SIZE))) = {
+  0 // TODO: Include actual GB code
+};
 
 static void pio_init_gpio(PIO pio) {
   for (int i = 0; i < 8; i++) {
@@ -59,15 +63,16 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   dma_channel_configure(
       dma_addr_offset, &c,
       hw_set_alias_untyped(&dma_hw->ch[dma_data_out].al1_read_addr),
-      &s_rom_addr, 1, true);
+      &s_rom_addr, 1, false);
 
   // Step 3: Transfer ROM byte to the ROM data PIO FIFO
   c = dma_channel_get_default_config(dma_data_out);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
+  channel_config_set_chain_to(&c, dma_fetch_addr);
   dma_channel_configure(dma_data_out, &c, data_fifo,
                         NULL,  // The source address is updated in step 1 and 2
-                        1, true);
+                        1, false);
 }
 
 static void init_cartridge_interface(PIO pio, uint muxed_cartridge_signals,
@@ -114,14 +119,44 @@ static void init_cartridge_interface(PIO pio, uint muxed_cartridge_signals,
 
   // TODO: enable SMs
 }
+
+void init_memory_benchmark(PIO pio, uint pin, uintptr_t rom_addr) {
+  uint sm = pio_claim_unused_sm(pio, true);
+
+  pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+  pio_gpio_init(pio, pin);
+
+  init_dma(pio_get_dreq(pio, sm, false), &pio->rxf[sm], &pio->txf[sm],
+           rom_addr);
+
+  uint offset = pio_add_program(pio, &memory_benchmark_program);
+  pio_sm_config c = memory_benchmark_program_get_default_config(offset);
+  pio_sm_init(pio, sm, offset, &c);
+  pio_sm_set_sideset_pins(pio, sm, pin);
+  pio_sm_set_enabled(pio, sm, true);
 }
 
 int main() {
+  // Run system and peripheral clock at 12MHz for easy cycle counting with a
+  // logic analyzer.
+  clock_configure(clk_sys, CLOCKS_CLK_SYS_CTRL_SRC_VALUE_CLK_REF, 0, 12 * MHZ,
+                  1 * MHZ);
+  clock_configure(clk_peri, 0, CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_XOSC_CLKSRC,
+                  12 * MHZ, 12 * MHZ);
+  pll_deinit(pll_sys);
+
   stdio_init_all();
 
-  init_cartridge_interface(pio0, 0, 8, (uintptr_t)&g_rom);
+  // init_cartridge_interface(pio0, 0, 8, 11, (uintptr_t)&g_rom);
 
-  // TODO: have a look at bus priories
+  printf("memory benchmark\n");
+  clock_gpio_init(21, CLOCKS_CLK_GPOUT0_CTRL_AUXSRC_VALUE_CLK_SYS, 1);
+  // const char *romaddr = &g_rom;
+  const char *romaddr = xip_nocache_noalloc_alias_untyped(&g_rom);
+  init_memory_benchmark(pio1, 20, (uintptr_t)romaddr);
+
+  while (true) {
+  }
 
   return 0;
 }
