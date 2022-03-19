@@ -1,0 +1,96 @@
+; TODO: License
+
+; The gameboy cartridge data and address signals are multiplexed with
+; switchable transceivers.
+;
+; SET0-2 control the OE (output-enable) lines of the transceivers.
+; SET3 selects the direction of the data transceiver (low=in, high=out).
+;
+; read_addr SM ->| SET           | IN                            |
+; pin number   ->| 3 | 2 | 1 | 0 | 10  |  9  |  8  |   7..0      |
+;                +---+---+---+---+-----+-----+-----+-------------+
+; data_out SM  ->| SIDE SET      | IN              | OUT         |
+; pin number   ->| 3 | 2 | 1 | 0 |  2  |  1  |  0  |   7..0      |
+;                +---+---+---+---+-----+-----+-----+-------------+
+;                | 0 | 1 | 1 | 0 | CLK | #CS | A15 |  D7..D0 in  |
+;                | 1 | 1 | 1 | 0 | CLK | #CS | A15 |  D7..D0 out |
+;                | 0 | 1 | 0 | 1 | CLK | #CS | A15 |  A7..A0     |
+;                | 0 | 0 | 1 | 1 | CLK | #CS | A15 | A15..A8     |
+
+.define public MUXED_SIGNAL_BITS 8
+.define public SIGNAL_BITS 3
+.define public CONTROL_BITS 4
+.define public CONTROL_MASK 0x1111
+.define public DATA_IN      0b0110
+.define public DATA_OUT     0b1110
+.define public ADDR_LO      0b0101
+.define public ADDR_HI      0b0011
+
+; PICO clock = 125MHz
+; GB clock = 4^22Hz = ~4Mhz
+.define CLOCK_RATIO 30
+
+;------------------------------------------------------------------------------;
+
+.program read_addr
+
+.define public A15 8
+.define public nCS 9
+.define public CLK 10
+
+    ; Synchronize once so that the addr sample delay actually starts hafter the
+    ; rising edge.
+    wait 0 pin CLK
+
+.wrap_target
+    ; The rising clock edge starts a bus access.
+    ; Wait a half GB clock for the address lines to become ready.
+    wait 1 pin CLK [CLOCK_RATIO/2]
+
+    ; Read the address, ADDR_HI is selected already.
+    in pins, 7 ; A14-A8
+    set pins, ADDR_LO
+    in pins, 8 ; A7-A0
+    ; autopush
+.wrap
+
+
+;------------------------------------------------------------------------------;
+
+.program data_out
+.side_set 4 opt
+
+.define public A15 0
+.define public nCS 1
+.define public CLK 2
+
+wait_data:
+    ; Sample A15 (ROM chip-select) at the falling clock edge (middle of cycle).
+    wait 0 pin CLK
+    in pins, 1 ; Read A15
+    push ; Trigger the DMA
+
+    ; Autopull is enabled for the RX FIFO.
+    ; Entries look like 0x0000ddFF where byte 0 (0xFF) sets the pin direction
+    ; to output, byte 1 is the data and byte 2 (0x00) sets the direction back
+    ; to input.
+    ; TODO: Adjust DMA to match above description.
+
+    ; Write data to bus.
+    out pindirs, 8 side DATA_OUT
+    out pins, 8
+
+    ; Switch to input when ROM is de-asserted.
+    wait 1 pin A15
+    out pindirs, 8 side ADDR_HI
+    ; The read_addr SM updates the control pins.
+
+;------------------------------------------------------------------------------;
+
+.program memory_benchmark
+.side_set 1
+
+    nop  side 0 [15]
+    push side 1
+    pull side 1
+    nop  side 0

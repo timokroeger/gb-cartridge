@@ -11,7 +11,7 @@ pico_sdk_init()
 add_executable(gb-cartridge)
 
 pico_generate_pio_header(gb-cartridge
-    ${CMAKE_CURRENT_LIST_DIR}/src/read_addr.pio
+    ${CMAKE_CURRENT_LIST_DIR}/src/cartridge_interface.pio
 )
 
 target_sources(gb-cartridge PRIVATE
