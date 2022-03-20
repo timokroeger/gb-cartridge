@@ -4,10 +4,13 @@
 // Just enough for simple games like Tetris or Dr. Mario.
 #define ROM_SIZE (32 * 1024)
 
-// Multiplexed cartridge pins
-#define PIN_CARTRIDGE_BASE 0
+// Multiplexed cartridge signals: D0-D7, A0-A7, A8-A15.
+#define MUXED_CARTRIDGE_SIGNALS_BASE 2
 
-// OE and DIR pins of the transceivers
-#define PIN_CONTROL_BASE
+// OE and DIR of transceivers.
+#define MUX_CONTROL_BASE 10
+
+// Other cartridge signals: A15, #CS, CLK, #RD.
+#define CARTRIDGE_SIGNALS_BASE 16
 
 #endif // CONFIG_H

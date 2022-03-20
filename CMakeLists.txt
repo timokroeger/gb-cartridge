@@ -26,8 +26,6 @@ target_link_libraries(gb-cartridge
     hardware_pll
 )
 
-# Faster flash access speed, default is 4
-target_compile_definitions(gb-cartridge PRIVATE PICO_FLASH_SPI_CLKDIV=2)
+pico_set_binary_type(gb-cartridge copy_to_ram)
 
-pico_set_binary_type(gb-cartridge default)
 pico_add_extra_outputs(gb-cartridge)

@@ -54,7 +54,6 @@
     ; autopush
 .wrap
 
-
 ;------------------------------------------------------------------------------;
 
 .program data_out
@@ -65,12 +64,12 @@
 .define public CLK 2
 
 wait_data:
-    ; Sample A15 (ROM chip-select) at the falling clock edge (middle of cycle).
+    ; Update data at the falling clock edge (middle of cycle).
+    ; In case of write (gameboy to cartridge) the GB also has the data ready at
+    ; this time.
     wait 0 pin CLK
-    in pins, 1 ; Read A15
-    push ; Trigger the DMA
 
-    ; Autopull is enabled for the RX FIFO.
+    ; Autopull with a 24bit threshold is enabled for the RX FIFO.
     ; Entries look like 0x0000ddFF where byte 0 (0xFF) sets the pin direction
     ; to output, byte 1 is the data and byte 2 (0x00) sets the direction back
     ; to input.
@@ -80,10 +79,9 @@ wait_data:
     out pindirs, 8 side DATA_OUT
     out pins, 8
 
-    ; Switch to input when ROM is de-asserted.
-    wait 1 pin A15
+    ; Release the data lines at the end of the cycle.
+    wait 1 pin CLK
     out pindirs, 8 side ADDR_HI
-    ; The read_addr SM updates the control pins.
 
 ;------------------------------------------------------------------------------;
 
