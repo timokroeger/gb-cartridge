@@ -26,6 +26,4 @@ target_link_libraries(gb-cartridge
     hardware_pll
 )
 
-pico_set_binary_type(gb-cartridge copy_to_ram)
-
 pico_add_extra_outputs(gb-cartridge)

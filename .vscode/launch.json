@@ -11,17 +11,10 @@
             "executable": "./build/gb-cartridge.elf",
             "request": "launch",
             "type": "cortex-debug",
-            "runToMain": true,
             "svdFile": "../pico-sdk/src/rp2040/hardware_regs/rp2040.svd",
+            "runToMain": true,
             "servertype": "jlink",
             "device": "RP2040_M0_0",
-            "overrideLaunchCommands": [
-                "-interpreter-exec console \"monitor halt\"",
-                "-interpreter-exec console \"monitor reset\"",
-                "-target-download",
-                "-enable-pretty-printing",
-                "jump _entry_point"
-            ],
         }
     ]
 }

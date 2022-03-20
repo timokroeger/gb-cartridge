@@ -1,11 +1,5 @@
 // TODO: License Header
 
-// A NO_FLASH build is feasible too but it disables boot2 and we would have
-// to set up flash XIP ourselves.
-#if !PICO_COPY_TO_RAM
-#error "code must execute from RAM for predictable flash access times"
-#endif
-
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -16,6 +10,7 @@
 #include "hardware/dma.h"
 #include "hardware/pio.h"
 #include "hardware/pll.h"
+#include "hardware/sync.h"
 #include "pico/stdlib.h"
 
 #define ROM_ATTRIBUTES \
@@ -120,7 +115,7 @@ static void init_cartridge_interface(PIO pio, uint muxed_cartridge_signals,
            &pio->txf[data_out_sm], rom_addr);
 }
 
-void init_memory_benchmark(PIO pio, uint pin, uintptr_t rom_addr) {
+static void init_memory_benchmark(PIO pio, uint pin, uintptr_t rom_addr) {
   uint sm = pio_claim_unused_sm(pio, true);
 
   pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
@@ -136,20 +131,36 @@ void init_memory_benchmark(PIO pio, uint pin, uintptr_t rom_addr) {
   pio_sm_set_enabled(pio, sm, true);
 }
 
+static void __no_inline_not_in_flash_func(address_decoder)(void)
+    __attribute__((optimize("O3")));
+static void __no_inline_not_in_flash_func(address_decoder)(void) {
+  // TODO: Address decoder
+}
+
+static void __no_inline_not_in_flash_func(ram_sleep_loop)(void) {
+  while (true) {
+    __wfi();
+  }
+}
+
 int main() {
-  // Run system and peripheral clock at 12MHz for easy cycle counting with a
-  // logic analyzer.
-  clock_configure(clk_sys, CLOCKS_CLK_SYS_CTRL_SRC_VALUE_CLK_REF, 0, 12 * MHZ,
-                  1 * MHZ);
-  clock_configure(clk_peri, 0, CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_XOSC_CLKSRC,
-                  12 * MHZ, 12 * MHZ);
+  // Run system clock at 1MHz for easy cycle counting with a logic analyzer.
+  clock_configure(clk_ref, CLOCKS_CLK_REF_CTRL_SRC_VALUE_XOSC_CLKSRC, 0,
+                  XOSC_MHZ * MHZ, XOSC_MHZ * MHZ);
+  clock_configure(clk_sys, CLOCKS_CLK_SYS_CTRL_SRC_VALUE_CLK_REF, 0,
+                  XOSC_MHZ * MHZ, 1 * MHZ);
+  clock_configure(clk_peri, 0, CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_USB,
+                  48 * MHZ, 48 * MHZ);
   pll_deinit(pll_sys);
 
   // Have a clock ouput to verify our configuration.
   clock_gpio_init(21, CLOCKS_CLK_GPOUT0_CTRL_AUXSRC_VALUE_CLK_SYS, 1);
 
+  gpio_init(PICO_DEFAULT_LED_PIN);
+  gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+  gpio_put(PICO_DEFAULT_LED_PIN, 1);
+
   stdio_init_all();
-  printf("hello\n");
 
   const char *romaddr = xip_nocache_noalloc_alias_untyped(&g_rom);
   // init_cartridge_interface(pio0, MUXED_CARTRIDGE_SIGNALS_BASE,
@@ -158,8 +169,9 @@ int main() {
 
   init_memory_benchmark(pio1, 20, (uintptr_t)romaddr);
 
-  while (true) {
-  }
+  // Make sure that no cade runs from flash memory anymore to guarantee for
+  // constant flash access times.
+  ram_sleep_loop();
 
   return 0;
 }
