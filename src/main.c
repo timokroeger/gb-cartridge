@@ -13,10 +13,9 @@
 #include "hardware/sync.h"
 #include "pico/stdlib.h"
 
-#define ROM_ATTRIBUTES \
-  __attribute__((aligned(ROM_SIZE))) __attribute__((section("flashdata")))
-
-static const uint8_t ROM_ATTRIBUTES g_rom[ROM_SIZE] = {
+// TODO: When using the bootloader to flash uf2 files we get hardfaults for any
+// alignment >= 8KiB, WHY?
+static const uint8_t g_rom[ROM_SIZE] __attribute__((aligned(ROM_SIZE))) = {
     0  // TODO: Include actual GB code
 };
 
@@ -50,9 +49,9 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_write_increment(&c, false);
   channel_config_set_chain_to(&c, copy_rom_ch);
   channel_config_set_dreq(&c, addr_dreq);
-  dma_channel_configure(
-      addr_ch, &c, hw_set_alias_untyped(&dma_hw->ch[copy_rom_ch].al1_read_addr),
-      addr_fifo, 1, true);
+  dma_channel_configure(addr_ch, &c,
+                        hw_set_alias(&dma_hw->ch[copy_rom_ch].read_addr),
+                        addr_fifo, 1, true);
 
   // Step 2: Copy from ROM to temporary memory location.
   //         This takes ~50 cycles because it accesses flash and makes it the
@@ -62,8 +61,9 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
   channel_config_set_chain_to(&c, data_inout_ch);
-  dma_channel_configure(copy_rom_ch, &c, &s_rom_out_command[0], &s_rom_addr, 1,
-                        false);
+  dma_channel_configure(copy_rom_ch, &c, &s_rom_out_command[0],
+                        &g_rom,  // Step 1 adds offset. Step 4 resets this.
+                        1, false);
 
   // Step 3: Transfer the selected command to the `data_out_in` SM.
   c = dma_channel_get_default_config(data_inout_ch);
@@ -71,16 +71,16 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
   channel_config_set_chain_to(&c, reset_rom_addr_ch);
-  dma_channel_configure(data_inout_ch, &c, data_fifo, &s_rom_out_command, 1,
-                        false);
+  dma_channel_configure(data_inout_ch, &c, data_fifo,
+                        &s_rom_out_command,  // Updated by address decoder.
+                        1, false);
 
   // Step 4: Reset `copy_rom_ch` read register to start of ROM memory bank.
   c = dma_channel_get_default_config(reset_rom_addr_ch);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
   channel_config_set_chain_to(&c, addr_ch);
-  channel_config_set_dreq(&c, addr_dreq);
-  dma_channel_configure(addr_ch, &c, &dma_hw->ch[copy_rom_ch].al1_read_addr,
+  dma_channel_configure(addr_ch, &c, &dma_hw->ch[copy_rom_ch].read_addr,
                         &s_rom_addr, 1, false);
 
   // TODO: Independent DMA channel to pull data from `data_out_in`.
@@ -182,10 +182,11 @@ int main() {
   gpio_put(PICO_DEFAULT_LED_PIN, 1);
 
   stdio_init_all();
+  printf("hello\n");
 
-  const char *romaddr = xip_nocache_noalloc_alias_untyped(&g_rom);
-  // init_cartridge_interface(pio0, MUXED_CARTRIDGE_SIGNALS_BASE,
-  //                          CARTRIDGE_SIGNALS_BASE, MUX_CONTROL_BASE);
+  // const char *romaddr = xip_nocache_noalloc_alias_untyped(&g_rom);
+  //  init_cartridge_interface(pio0, MUXED_CARTRIDGE_SIGNALS_BASE,
+  //                           CARTRIDGE_SIGNALS_BASE, MUX_CONTROL_BASE);
 
   init_memory_benchmark(pio1, 20);
 
