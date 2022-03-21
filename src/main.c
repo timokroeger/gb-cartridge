@@ -16,58 +16,78 @@
 #define ROM_ATTRIBUTES \
   __attribute__((aligned(ROM_SIZE))) __attribute__((section("flashdata")))
 
-const uint8_t g_rom[ROM_SIZE] ROM_ATTRIBUTES = {
+static const uint8_t ROM_ATTRIBUTES g_rom[ROM_SIZE] = {
     0  // TODO: Include actual GB code
 };
 
+// Pointer to the start of the current ROM memory bank.
+static volatile uintptr_t s_rom_addr = (uintptr_t)&g_rom;
+
+// GB reads ROM, we provide the data.
+// These are specialized "meta-instructions" for the `data_out_in` SM.
+static volatile uint8_t s_rom_out_command[6] = {
+    0x00, DATA_OUT,  // DMA writes actual ROM data to the first byte.
+    0xFF,            // Sets D0-D7 to output.
+    0x00,            // Resets D0-D7 to input.
+    0x00, ADDR_HI,   // Release the data lines by switching transceiver.
+};
+
 static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
-                     volatile void *data_fifo, uintptr_t rom_addr) {
-  assert((rom_addr % ROM_SIZE) == 0 && "GB ROM memory is not aligned properly");
-
-  // Make it live forever so that DMA can use it.
-  static uintptr_t s_rom_addr;
-  s_rom_addr = rom_addr;
-
+                     volatile void *data_fifo) {
   // Read ROM data DMA chain
-  int dma_fetch_addr = dma_claim_unused_channel(true);
-  int dma_addr_offset = dma_claim_unused_channel(true);
-  int dma_data_out = dma_claim_unused_channel(true);
+  int addr_ch = dma_claim_unused_channel(true);
+  int copy_rom_ch = dma_claim_unused_channel(true);
+  int data_inout_ch = dma_claim_unused_channel(true);
+  int reset_rom_addr_ch = dma_claim_unused_channel(true);
   dma_channel_config c;
 
-  // Step 1: Fetch ROM address from the addr decoder PIO FIFO
-  c = dma_channel_get_default_config(dma_fetch_addr);
+  // Step 1: Get the ROM address from the `read_addr` SM and use it as offset
+  //         into the current ROM bank. Directly write the offset to the read
+  //         register of the `copy_rom_ch` dma channel. Use the atomic set alias
+  //         memory address to add the offset without overwriting.
+  c = dma_channel_get_default_config(addr_ch);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
-  channel_config_set_chain_to(&c, dma_addr_offset);
+  channel_config_set_chain_to(&c, copy_rom_ch);
   channel_config_set_dreq(&c, addr_dreq);
-  dma_channel_configure(dma_fetch_addr, &c,
-                        &dma_hw->ch[dma_data_out].al1_read_addr, addr_fifo, 1,
-                        true);
-
-  // Step 2: Add the ROM address offset to the address by writing to the atomic
-  //         set alias
-  c = dma_channel_get_default_config(dma_addr_offset);
-  channel_config_set_read_increment(&c, false);
-  channel_config_set_write_increment(&c, false);
-  channel_config_set_chain_to(&c, dma_data_out);
   dma_channel_configure(
-      dma_addr_offset, &c,
-      hw_set_alias_untyped(&dma_hw->ch[dma_data_out].al1_read_addr),
-      &s_rom_addr, 1, false);
+      addr_ch, &c, hw_set_alias_untyped(&dma_hw->ch[copy_rom_ch].al1_read_addr),
+      addr_fifo, 1, true);
 
-  // Step 3: Transfer ROM byte to the ROM data PIO FIFO
-  c = dma_channel_get_default_config(dma_data_out);
+  // Step 2: Copy from ROM to temporary memory location.
+  //         This takes ~50 cycles because it accesses flash and makes it the
+  //         slowest operation of a bus access cycle.
+  c = dma_channel_get_default_config(copy_rom_ch);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
-  channel_config_set_chain_to(&c, dma_fetch_addr);
-  dma_channel_configure(dma_data_out, &c, data_fifo,
-                        NULL,  // The source address is updated in step 1 and 2
-                        1, false);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
+  channel_config_set_chain_to(&c, data_inout_ch);
+  dma_channel_configure(copy_rom_ch, &c, &s_rom_out_command[0], &s_rom_addr, 1,
+                        false);
+
+  // Step 3: Transfer the selected command to the `data_out_in` SM.
+  c = dma_channel_get_default_config(data_inout_ch);
+  channel_config_set_read_increment(&c, true);
+  channel_config_set_write_increment(&c, false);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
+  channel_config_set_chain_to(&c, reset_rom_addr_ch);
+  dma_channel_configure(data_inout_ch, &c, data_fifo, &s_rom_out_command, 1,
+                        false);
+
+  // Step 4: Reset `copy_rom_ch` read register to start of ROM memory bank.
+  c = dma_channel_get_default_config(reset_rom_addr_ch);
+  channel_config_set_read_increment(&c, false);
+  channel_config_set_write_increment(&c, false);
+  channel_config_set_chain_to(&c, addr_ch);
+  channel_config_set_dreq(&c, addr_dreq);
+  dma_channel_configure(addr_ch, &c, &dma_hw->ch[copy_rom_ch].al1_read_addr,
+                        &s_rom_addr, 1, false);
+
+  // TODO: Independent DMA channel to pull data from `data_out_in`.
 }
 
 static void init_cartridge_interface(PIO pio, uint muxed_cartridge_signals,
-                                     uint cartridge_signals, uint mux_control,
-                                     uintptr_t rom_addr) {
+                                     uint cartridge_signals, uint mux_control) {
   uint offset;
   pio_sm_config c;
 
@@ -89,7 +109,7 @@ static void init_cartridge_interface(PIO pio, uint muxed_cartridge_signals,
     pio_gpio_init(pio, mux_control + i);
   }
 
-  // Configure read_addr state machine
+  // Configure the `read_addr` state machine
   uint read_addr_sm = temp_sm;
   offset = pio_add_program(pio, &read_addr_program);
   c = read_addr_program_get_default_config(offset);
@@ -100,29 +120,31 @@ static void init_cartridge_interface(PIO pio, uint muxed_cartridge_signals,
   pio_sm_init(pio, read_addr_sm, offset, &c);
   pio_sm_set_enabled(pio, read_addr_sm, true);
 
-  // Configure data state machine
-  uint data_out_sm = pio_claim_unused_sm(pio, true);
-  offset = pio_add_program(pio, &data_out_program);
-  c = data_out_program_get_default_config(offset);
-  sm_config_set_out_pins(&c, muxed_cartridge_signals, 8);
+  // Configure the `data_out_in` state machine
+  uint data_out_in_sm = pio_claim_unused_sm(pio, true);
+  offset = pio_add_program(pio, &data_out_in_program);
+  c = data_out_in_program_get_default_config(offset);
+  sm_config_set_out_pins(&c, muxed_cartridge_signals, 12);
   sm_config_set_in_pins(&c, muxed_cartridge_signals + 8);
-  sm_config_set_sideset_pins(&c, mux_control);
-  pio_sm_init(pio, data_out_sm, offset, &c);
-  pio_sm_set_enabled(pio, data_out_sm, true);
+  sm_config_set_out_shift(&c, true,   // shift_direction=right
+                          true, 16);  // autopull enabled
+  sm_config_set_in_shift(&c, false,   // shift_direction=left
+                         true, 8);    // autopush enabled
+  pio_sm_init(pio, data_out_in_sm, offset, &c);
+  pio_sm_set_enabled(pio, data_out_in_sm, true);
 
   // DMA chain to connect the two state machines
   init_dma(pio_get_dreq(pio, read_addr_sm, false), &pio->rxf[read_addr_sm],
-           &pio->txf[data_out_sm], rom_addr);
+           &pio->txf[data_out_in_sm]);
 }
 
-static void init_memory_benchmark(PIO pio, uint pin, uintptr_t rom_addr) {
+static void init_memory_benchmark(PIO pio, uint pin) {
   uint sm = pio_claim_unused_sm(pio, true);
 
   pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
   pio_gpio_init(pio, pin);
 
-  init_dma(pio_get_dreq(pio, sm, false), &pio->rxf[sm], &pio->txf[sm],
-           rom_addr);
+  init_dma(pio_get_dreq(pio, sm, false), &pio->rxf[sm], &pio->txf[sm]);
 
   uint offset = pio_add_program(pio, &memory_benchmark_program);
   pio_sm_config c = memory_benchmark_program_get_default_config(offset);
@@ -131,9 +153,8 @@ static void init_memory_benchmark(PIO pio, uint pin, uintptr_t rom_addr) {
   pio_sm_set_enabled(pio, sm, true);
 }
 
-static void __no_inline_not_in_flash_func(address_decoder)(void)
-    __attribute__((optimize("O3")));
-static void __no_inline_not_in_flash_func(address_decoder)(void) {
+static void __attribute__((optimize("O3")))
+__no_inline_not_in_flash_func(address_decoder)(void) {
   // TODO: Address decoder
 }
 
@@ -164,10 +185,9 @@ int main() {
 
   const char *romaddr = xip_nocache_noalloc_alias_untyped(&g_rom);
   // init_cartridge_interface(pio0, MUXED_CARTRIDGE_SIGNALS_BASE,
-  //                          CARTRIDGE_SIGNALS_BASE, MUX_CONTROL_BASE,
-  //                          (uintptr_t)&g_rom);
+  //                          CARTRIDGE_SIGNALS_BASE, MUX_CONTROL_BASE);
 
-  init_memory_benchmark(pio1, 20, (uintptr_t)romaddr);
+  init_memory_benchmark(pio1, 20);
 
   // Make sure that no cade runs from flash memory anymore to guarantee for
   // constant flash access times.

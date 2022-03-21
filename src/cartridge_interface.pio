@@ -6,16 +6,16 @@
 ; SET0-2 control the OE (output-enable) lines of the transceivers.
 ; SET3 selects the direction of the data transceiver (low=in, high=out).
 ;
-; read_addr SM ->| SET           | IN                            |
-; pin number   ->| 3 | 2 | 1 | 0 | 10  |  9  |  8  |   7..0      |
-;                +---+---+---+---+-----+-----+-----+-------------+
-; data_out SM  ->| SIDE SET      | IN              | OUT         |
-; pin number   ->| 3 | 2 | 1 | 0 |  2  |  1  |  0  |   7..0      |
-;                +---+---+---+---+-----+-----+-----+-------------+
-;                | 0 | 1 | 1 | 0 | CLK | #CS | A15 |  D7..D0 in  |
-;                | 1 | 1 | 1 | 0 | CLK | #CS | A15 |  D7..D0 out |
-;                | 0 | 1 | 0 | 1 | CLK | #CS | A15 |  A7..A0     |
-;                | 0 | 0 | 1 | 1 | CLK | #CS | A15 | A15..A8     |
+; read_addr SM ->|      SET      |        IN         |
+; pin number   ->| 3 | 2 | 1 | 0 |  8  |   7..0      |
+; ---------------+---+---+---+---+-----+-------------+
+; data_out SM  ->|      OUT      | IN  |     OUT     |
+; pin number   ->|12 |11 |10 | 9 |  0  |   7..0      |
+; ---------------+---+---+---+---+-----+-------------+
+;       DATA_IN  | 0 | 1 | 1 | 0 | CLK |  D7..D0 in  |
+;       DATA_OUT | 1 | 1 | 1 | 0 | CLK |  D7..D0 out |
+;       ADDR_LO  | 0 | 1 | 0 | 1 | CLK |  A7..A0     |
+;       ADDR_HI  | 0 | 0 | 1 | 1 | CLK | A14..A8     |
 
 .define public MUXED_SIGNAL_BITS 8
 .define public SIGNAL_BITS 3
@@ -34,9 +34,7 @@
 
 .program read_addr
 
-.define public A15 8
-.define public nCS 9
-.define public CLK 10
+.define public CLK 8
 
     ; Synchronize once so that the addr sample delay actually starts hafter the
     ; rising edge.
@@ -56,32 +54,32 @@
 
 ;------------------------------------------------------------------------------;
 
-.program data_out
-.side_set 4 opt
+.program data_out_in
 
-.define public A15 0
-.define public nCS 1
-.define public CLK 2
+.define public CLK 0
 
-wait_data:
     ; Update data at the falling clock edge (middle of cycle).
     ; In case of write (gameboy to cartridge) the GB also has the data ready at
     ; this time.
     wait 0 pin CLK
 
-    ; Autopull with a 24bit threshold is enabled for the RX FIFO.
-    ; Entries look like 0x0000ddFF where byte 0 (0xFF) sets the pin direction
-    ; to output, byte 1 is the data and byte 2 (0x00) sets the direction back
-    ; to input.
-    ; TODO: Adjust DMA to match above description.
+    ; 16bit autopull is enabled for the RX FIFO to receive following data:
+    ; 16bit output data to select DATA_IN or DATA_OUT + D0-D7 pins
+    ; 8bit pindirs=0x00 for DATA_IN, pindirs=0xFF for DATA_OUT
+    ; 8bit pindirs=0x00 to reset GPIOs to inputs
+    ; 16bit output data to select ADDR_HI for the next cycle
 
-    ; Write data to bus.
-    out pindirs, 8 side DATA_OUT
-    out pins, 8
+    ; Write output data (or not when selecting DATA_IN).
+    out pins, 16
+    out pindirs, 16
+
+    ; Read data. It will discarded later for DATA_OUT.
+    in pins, 8
 
     ; Release the data lines at the end of the cycle.
     wait 1 pin CLK
-    out pindirs, 8 side ADDR_HI
+    out pindirs, 16
+    out pins, 16
 
 ;------------------------------------------------------------------------------;
 
