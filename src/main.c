@@ -20,7 +20,7 @@ static const uint8_t g_rom[ROM_SIZE] __attribute__((aligned(ROM_SIZE))) = {
 };
 
 // Pointer to the start of the current ROM memory bank.
-static volatile uintptr_t s_rom_addr = (uintptr_t)&g_rom;
+static volatile uintptr_t s_rom_addr;
 
 // GB reads ROM, we provide the data.
 // These are specialized "meta-instructions" for the `data_out_in` SM.
@@ -34,13 +34,23 @@ static volatile uint8_t s_rom_out_command[6] = {
 static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
                      volatile void *data_fifo) {
   // Read ROM data DMA chain
+  int reset_rom_addr_ch = dma_claim_unused_channel(true);
   int addr_ch = dma_claim_unused_channel(true);
   int copy_rom_ch = dma_claim_unused_channel(true);
   int data_inout_ch = dma_claim_unused_channel(true);
-  int reset_rom_addr_ch = dma_claim_unused_channel(true);
   dma_channel_config c;
 
-  // Step 1: Get the ROM address from the `read_addr` SM and use it as offset
+  // Step 1: Reset `copy_rom_ch` read register to start of ROM memory bank.
+  s_rom_addr = (uintptr_t)xip_nocache_noalloc_alias_untyped(&g_rom);
+  c = dma_channel_get_default_config(reset_rom_addr_ch);
+  channel_config_set_read_increment(&c, false);
+  channel_config_set_write_increment(&c, false);
+  channel_config_set_chain_to(&c, addr_ch);
+  dma_channel_configure(reset_rom_addr_ch, &c,
+                        &dma_hw->ch[copy_rom_ch].read_addr, &s_rom_addr, 1,
+                        false);
+
+  // Step 2: Get the ROM address from the `read_addr` SM and use it as offset
   //         into the current ROM bank. Directly write the offset to the read
   //         register of the `copy_rom_ch` dma channel. Use the atomic set alias
   //         memory address to add the offset without overwriting.
@@ -51,9 +61,9 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_dreq(&c, addr_dreq);
   dma_channel_configure(addr_ch, &c,
                         hw_set_alias(&dma_hw->ch[copy_rom_ch].read_addr),
-                        addr_fifo, 1, true);
+                        addr_fifo, 1, false);
 
-  // Step 2: Copy from ROM to temporary memory location.
+  // Step 3: Copy from ROM to temporary memory location.
   //         This takes ~50 cycles because it accesses flash and makes it the
   //         slowest operation of a bus access cycle.
   c = dma_channel_get_default_config(copy_rom_ch);
@@ -62,28 +72,22 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
   channel_config_set_chain_to(&c, data_inout_ch);
   dma_channel_configure(copy_rom_ch, &c, &s_rom_out_command[0],
-                        &g_rom,  // Step 1 adds offset. Step 4 resets this.
+                        NULL,  // Calculated in step 1 and 2. 
                         1, false);
 
-  // Step 3: Transfer the selected command to the `data_out_in` SM.
+  // Step 4: Transfer the selected command to the `data_out_in` SM.
   c = dma_channel_get_default_config(data_inout_ch);
   channel_config_set_read_increment(&c, true);
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
   channel_config_set_chain_to(&c, reset_rom_addr_ch);
   dma_channel_configure(data_inout_ch, &c, data_fifo,
-                        &s_rom_out_command,  // Updated by address decoder.
-                        1, false);
-
-  // Step 4: Reset `copy_rom_ch` read register to start of ROM memory bank.
-  c = dma_channel_get_default_config(reset_rom_addr_ch);
-  channel_config_set_read_increment(&c, false);
-  channel_config_set_write_increment(&c, false);
-  channel_config_set_chain_to(&c, addr_ch);
-  dma_channel_configure(addr_ch, &c, &dma_hw->ch[copy_rom_ch].read_addr,
-                        &s_rom_addr, 1, false);
+                        s_rom_out_command,  // Updated by address decoder.
+                        3, false);
 
   // TODO: Independent DMA channel to pull data from `data_out_in`.
+
+  dma_channel_start(reset_rom_addr_ch);
 }
 
 static void init_cartridge_interface(PIO pio, uint muxed_cartridge_signals,

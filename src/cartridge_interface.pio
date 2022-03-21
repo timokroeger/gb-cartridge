@@ -97,5 +97,7 @@
     nop  side 0 [15]
     push side 1
     pull side 1
+    pull side 0
+    pull side 0
     nop  side 0 [15]
 .wrap
