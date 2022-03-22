@@ -21,9 +21,8 @@
 // 12..15: OE0-2, DIR0
 #define PIN_BASE 2
 
-static const uint8_t g_rom[ROM_SIZE] __attribute__((aligned(ROM_SIZE))) = {
-    0  // TODO: Include actual GB code
-};
+// TODO: Include actual GB code
+static const uint8_t __in_flash() __aligned(ROM_SIZE) g_rom[ROM_SIZE] = {0xFF};
 
 // Pointer to the start of the current ROM memory bank.
 static volatile uintptr_t s_rom_addr;
@@ -116,6 +115,7 @@ static void init_cartridge_interface(PIO pio, uint pins) {
   for (int i = 0; i < CONTROL_BITS; i++) {
     pio_gpio_init(pio, control_pins + i);
   }
+  pio->input_sync_bypass |= (1 << (pins + CLK));
 
   // Configure the `read_addr` state machine
   uint read_addr_sm = temp_sm;
@@ -146,6 +146,21 @@ static void init_cartridge_interface(PIO pio, uint pins) {
            &pio->txf[data_out_in_sm]);
 }
 
+static uint init_clk_emu(PIO pio, uint pin) {
+  uint sm = pio_claim_unused_sm(pio, true);
+
+  pio_sm_set_consecutive_pindirs(pio, sm, pin, 2, true);
+  pio_gpio_init(pio, pin);
+  pio_gpio_init(pio, pin + 1);
+
+  uint offset = pio_add_program(pio, &clk_emu_program);
+  pio_sm_config c = clk_emu_program_get_default_config(offset);
+  sm_config_set_set_pins(&c, pin, 2);
+  sm_config_set_clkdiv_int_frac(&c, 15, 0);
+  pio_sm_init(pio, sm, offset, &c);
+  return sm;
+}
+
 static uint init_memory_benchmark(PIO pio, uint pin) {
   uint sm = pio_claim_unused_sm(pio, true);
 
@@ -156,8 +171,8 @@ static uint init_memory_benchmark(PIO pio, uint pin) {
 
   uint offset = pio_add_program(pio, &memory_benchmark_program);
   pio_sm_config c = memory_benchmark_program_get_default_config(offset);
+  sm_config_set_sideset_pins(&c, pin);
   pio_sm_init(pio, sm, offset, &c);
-  pio_sm_set_sideset_pins(pio, sm, pin);
   return sm;
 }
 
@@ -193,15 +208,13 @@ int main() {
   stdio_init_all();
   printf("hello\n");
 
-  // const char *romaddr = xip_nocache_noalloc_alias_untyped(&g_rom);
-  //  init_cartridge_interface(pio0, MUXED_CARTRIDGE_SIGNALS_BASE,
-  //                           CARTRIDGE_SIGNALS_BASE, MUX_CONTROL_BASE);
-
-  int sm_bench = init_memory_benchmark(pio1, 20);
+  init_cartridge_interface(pio0, PIN_BASE);
+  uint sm = init_clk_emu(pio0, 18);
+  // int sm = init_memory_benchmark(pio0, 20);
 
   // Make sure that no cade runs from flash memory anymore to guarantee for
   // constant flash access times.
-  ram_sleep_loop(pio1, sm_bench);
+  ram_sleep_loop(pio0, sm);
 
   return 0;
 }

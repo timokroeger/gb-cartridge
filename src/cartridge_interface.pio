@@ -54,7 +54,7 @@
 
     ; Read the address, ADDR_HI is selected already.
     in pins, 7 ; A14-A8, cycle 16
-    set pins, ADDR_LO
+    set pins, ADDR_LO ; cycle 17
     in pins, 8 ; A7-A0, cycle 18
     ; autopush
 .wrap
@@ -99,3 +99,16 @@
     pull side 1
     nop side 0
     nop side 1
+
+;------------------------------------------------------------------------------;
+
+.program clk_emu
+
+    set pins, 0b11
+    set pins, 0b01
+    set pins, 0b11
+    set pins, 0b01
+    set pins, 0b10
+    set pins, 0b00
+    set pins, 0b10
+    set pins, 0b00
