@@ -5,7 +5,6 @@
 #include <stdio.h>
 
 #include "cartridge_interface.pio.h"
-#include "config.h"
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
@@ -13,8 +12,15 @@
 #include "hardware/sync.h"
 #include "pico/stdlib.h"
 
-// TODO: When using the bootloader to flash uf2 files we get hardfaults for any
-// alignment >= 8KiB, WHY?
+// Just enough for simple games like Tetris or Dr. Mario.
+#define ROM_SIZE (32 * 1024)
+
+// Pin Base:
+// 0 .. 7: D0-D7, A0-A7, A8-A15 - 8 bit multiplexed:
+// 8 ..11: CLK, A15, #CS, #RD
+// 12..15: OE0-2, DIR0
+#define PIN_BASE 2
+
 static const uint8_t g_rom[ROM_SIZE] __attribute__((aligned(ROM_SIZE))) = {
     0  // TODO: Include actual GB code
 };
@@ -23,12 +29,14 @@ static const uint8_t g_rom[ROM_SIZE] __attribute__((aligned(ROM_SIZE))) = {
 static volatile uintptr_t s_rom_addr;
 
 // GB reads ROM, we provide the data.
-// These are specialized "meta-instructions" for the `data_out_in` SM.
-static volatile uint8_t s_rom_out_command[6] = {
-    0x00, DATA_OUT,  // DMA writes actual ROM data to the first byte.
-    0xFF,            // Sets D0-D7 to output.
-    0x00,            // Resets D0-D7 to input.
-    0x00, ADDR_HI,   // Release the data lines by switching transceiver.
+static volatile uint16_t s_rom_out_command[4] = {
+    // DMA writes actual ROM data to the first byte before we send this
+    // command sequence to the SM.
+    DATA_OUT << 12 | 0xAA,  // pins
+    0xF0FF,                 // pindir: Sets D0-D7 to output.
+    0xF000,                 // pindir: Resets D0-D7 to input.
+    // Release the data lines by switching transceiver.
+    ADDR_HI << 12 | 0xAA,  // pins
 };
 
 static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
@@ -72,7 +80,7 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
   channel_config_set_chain_to(&c, data_inout_ch);
   dma_channel_configure(copy_rom_ch, &c, &s_rom_out_command[0],
-                        NULL,  // Calculated in step 1 and 2. 
+                        NULL,  // Calculated in step 1 and 2.
                         1, false);
 
   // Step 4: Transfer the selected command to the `data_out_in` SM.
@@ -83,42 +91,38 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_chain_to(&c, reset_rom_addr_ch);
   dma_channel_configure(data_inout_ch, &c, data_fifo,
                         s_rom_out_command,  // Updated by address decoder.
-                        3, false);
+                        4, false);
 
   // TODO: Independent DMA channel to pull data from `data_out_in`.
 
   dma_channel_start(reset_rom_addr_ch);
 }
 
-static void init_cartridge_interface(PIO pio, uint muxed_cartridge_signals,
-                                     uint cartridge_signals, uint mux_control) {
+static void init_cartridge_interface(PIO pio, uint pins) {
   uint offset;
   pio_sm_config c;
 
+  uint control_pins = pins + CARTRIDGE_BITS;
+
   // Configure GPIOs
   uint temp_sm = pio_claim_unused_sm(pio, true);
-  pio_sm_set_pins(pio, temp_sm, ADDR_HI << mux_control);
-  pio_sm_set_consecutive_pindirs(pio, temp_sm, muxed_cartridge_signals,
-                                 MUXED_SIGNAL_BITS, false);
-  pio_sm_set_consecutive_pindirs(pio, temp_sm, cartridge_signals, SIGNAL_BITS,
-                                 false);
-  pio_sm_set_consecutive_pindirs(pio, temp_sm, mux_control, CONTROL_BITS, true);
-  for (int i = 0; i < MUXED_SIGNAL_BITS; i++) {
-    pio_gpio_init(pio, muxed_cartridge_signals + i);
-  }
-  for (int i = 0; i < SIGNAL_BITS; i++) {
-    pio_gpio_init(pio, cartridge_signals + i);
+  pio_sm_set_pins(pio, temp_sm, ADDR_HI << control_pins);
+  pio_sm_set_consecutive_pindirs(pio, temp_sm, pins, CARTRIDGE_BITS, false);
+  pio_sm_set_consecutive_pindirs(pio, temp_sm, control_pins, CONTROL_BITS,
+                                 true);
+  for (int i = 0; i < CARTRIDGE_BITS; i++) {
+    pio_gpio_init(pio, pins + i);
   }
   for (int i = 0; i < CONTROL_BITS; i++) {
-    pio_gpio_init(pio, mux_control + i);
+    pio_gpio_init(pio, control_pins + i);
   }
 
   // Configure the `read_addr` state machine
   uint read_addr_sm = temp_sm;
   offset = pio_add_program(pio, &read_addr_program);
   c = read_addr_program_get_default_config(offset);
-  sm_config_set_in_pins(&c, muxed_cartridge_signals);
-  sm_config_set_set_pins(&c, mux_control, 4);
+  sm_config_set_in_pins(&c, pins);
+  sm_config_set_set_pins(&c, control_pins, CONTROL_BITS);
   sm_config_set_in_shift(&c, false,  // shift_direction=left
                          true, 15);  // autopush enabled
   pio_sm_init(pio, read_addr_sm, offset, &c);
@@ -128,8 +132,8 @@ static void init_cartridge_interface(PIO pio, uint muxed_cartridge_signals,
   uint data_out_in_sm = pio_claim_unused_sm(pio, true);
   offset = pio_add_program(pio, &data_out_in_program);
   c = data_out_in_program_get_default_config(offset);
-  sm_config_set_out_pins(&c, muxed_cartridge_signals, 12);
-  sm_config_set_in_pins(&c, muxed_cartridge_signals + 8);
+  sm_config_set_in_pins(&c, pins);
+  sm_config_set_out_pins(&c, pins, CARTRIDGE_BITS + CONTROL_BITS);
   sm_config_set_out_shift(&c, true,   // shift_direction=right
                           true, 16);  // autopull enabled
   sm_config_set_in_shift(&c, false,   // shift_direction=left
@@ -142,7 +146,7 @@ static void init_cartridge_interface(PIO pio, uint muxed_cartridge_signals,
            &pio->txf[data_out_in_sm]);
 }
 
-static void init_memory_benchmark(PIO pio, uint pin) {
+static uint init_memory_benchmark(PIO pio, uint pin) {
   uint sm = pio_claim_unused_sm(pio, true);
 
   pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
@@ -154,7 +158,7 @@ static void init_memory_benchmark(PIO pio, uint pin) {
   pio_sm_config c = memory_benchmark_program_get_default_config(offset);
   pio_sm_init(pio, sm, offset, &c);
   pio_sm_set_sideset_pins(pio, sm, pin);
-  pio_sm_set_enabled(pio, sm, true);
+  return sm;
 }
 
 static void __attribute__((optimize("O3")))
@@ -162,7 +166,8 @@ __no_inline_not_in_flash_func(address_decoder)(void) {
   // TODO: Address decoder
 }
 
-static void __no_inline_not_in_flash_func(ram_sleep_loop)(void) {
+static void __no_inline_not_in_flash_func(ram_sleep_loop)(PIO pio, uint sm) {
+  pio_sm_set_enabled(pio, sm, true);
   while (true) {
     __wfi();
   }
@@ -192,11 +197,11 @@ int main() {
   //  init_cartridge_interface(pio0, MUXED_CARTRIDGE_SIGNALS_BASE,
   //                           CARTRIDGE_SIGNALS_BASE, MUX_CONTROL_BASE);
 
-  init_memory_benchmark(pio1, 20);
+  int sm_bench = init_memory_benchmark(pio1, 20);
 
   // Make sure that no cade runs from flash memory anymore to guarantee for
   // constant flash access times.
-  ram_sleep_loop();
+  ram_sleep_loop(pio1, sm_bench);
 
   return 0;
 }

@@ -6,49 +6,56 @@
 ; SET0-2 control the OE (output-enable) lines of the transceivers.
 ; SET3 selects the direction of the data transceiver (low=in, high=out).
 ;
-; read_addr SM ->|      SET      |        IN         |
-; pin number   ->| 3 | 2 | 1 | 0 |  8  |   7..0      |
-; ---------------+---+---+---+---+-----+-------------+
-; data_out SM  ->|      OUT      | IN  |     OUT     |
-; pin number   ->|12 |11 |10 | 9 |  0  |   7..0      |
-; ---------------+---+---+---+---+-----+-------------+
-;       DATA_IN  | 0 | 1 | 1 | 0 | CLK |  D7..D0 in  |
-;       DATA_OUT | 1 | 1 | 1 | 0 | CLK |  D7..D0 out |
-;       ADDR_LO  | 0 | 1 | 0 | 1 | CLK |  A7..A0     |
-;       ADDR_HI  | 0 | 0 | 1 | 1 | CLK | A14..A8     |
+; read_addr SM    |      SET      |                 IN                 |
+; pin number    ->| 3 | 2 | 1 | 0 | 11  | 10  |  9  |  8  |   7..0     |
+; ----------------+---+---+---+---+-----+-----+-----+-----+------------+
+; data_out_in SM->|                       IN/OUT                       |
+; pin number    ->|15 |14 |13 |12 | 11  | 10  |  9  |  8  |   7..0     |
+; ----------------+---+---+---+---+-----+-----+-----+-----+------------+
+;        DATA_IN  | 0 | 1 | 1 | 0 | CLK | #RD | #CS | A15 | D7..D0 in  |
+;        DATA_OUT | 1 | 1 | 1 | 0 | CLK | #RD | #CS | A15 | D7..D0 out |
+;        ADDR_LO  | 0 | 1 | 0 | 1 | CLK | #RD | #CS | A15 | A7..A0     |
+;        ADDR_HI  | 0 | 0 | 1 | 1 | CLK | #RD | #CS | A15 |A15..A8     |
 
-.define public MUXED_SIGNAL_BITS 8
-.define public SIGNAL_BITS 3
+.define public CARTRIDGE_BITS 12
 .define public CONTROL_BITS 4
+
 .define public CONTROL_MASK 0x1111
 .define public DATA_IN      0b0110
 .define public DATA_OUT     0b1110
 .define public ADDR_LO      0b0101
 .define public ADDR_HI      0b0011
 
-; PICO clock = 125MHz
-; GB clock = 4^22Hz = ~4Mhz
-.define CLOCK_RATIO 30
+.define public A15 8
+.define public nCS 9
+.define public nRD 10
+.define public CLK 11
 
 ;------------------------------------------------------------------------------;
 
 .program read_addr
 
-.define public CLK 8
+; PICO clock = 125MHz
+; GB clock = 4^22Hz = ~4Mhz
+; BUS clock = GB clock / 4 = 2^10Hz = ~1MHz
+; The Gameboy writes the address to the bus at the first falling edge of GB
+; clock. We use the rising edge of the BUS clock as reference and then count
+; pico cycles to read the address lines right after it becomes ready.
+.define ADDR_SAMPLE_DELAY 15
 
-    ; Synchronize once so that the addr sample delay actually starts hafter the
+    ; Synchronize once so that the addr sample delay actually starts at the
     ; rising edge.
     wait 0 pin CLK
 
 .wrap_target
     ; The rising clock edge starts a bus access.
     ; Wait a half GB clock for the address lines to become ready.
-    wait 1 pin CLK [CLOCK_RATIO/2]
+    wait 1 pin CLK [ADDR_SAMPLE_DELAY-1] ; Delay starts after the execution.
 
     ; Read the address, ADDR_HI is selected already.
-    in pins, 7 ; A14-A8
+    in pins, 7 ; A14-A8, cycle 16
     set pins, ADDR_LO
-    in pins, 8 ; A7-A0
+    in pins, 8 ; A7-A0, cycle 18
     ; autopush
 .wrap
 
@@ -56,22 +63,22 @@
 
 .program data_out_in
 
-.define public CLK 0
-
-    ; Update data at the falling clock edge (middle of cycle).
-    ; In case of write (gameboy to cartridge) the GB also has the data ready at
-    ; this time.
-    wait 0 pin CLK
-
     ; 16bit autopull is enabled for the RX FIFO to receive following data:
     ; 16bit output data to select DATA_IN or DATA_OUT + D0-D7 pins
     ; 8bit pindirs=0x00 for DATA_IN, pindirs=0xFF for DATA_OUT
     ; 8bit pindirs=0x00 to reset GPIOs to inputs
     ; 16bit output data to select ADDR_HI for the next cycle
 
+    ; Data must be available at the third rising edge of GB clock which
+    ; translates to a cycle count of 89.
+    ; The loop of `read_addr` RX FIFO -> DMA chain -> `data_out_in` TX FIFO
+    ; takes 63 cycles.
+
     ; Write output data (or not when selecting DATA_IN).
-    out pins, 16
-    out pindirs, 16
+    out pins, 16 ; cycle 18 + 63 = 81
+    out pindirs, 16 ; cycle 82
+    ; Deadline is met with 7 cycles spare.
+    ; TODO: Adjust ADDR_SAMPLE_DELAY to improve stablity.
 
     ; Read data. It will discarded later for DATA_OUT.
     in pins, 8
@@ -86,18 +93,9 @@
 .program memory_benchmark
 .side_set 1
 
-    set x, 0x5 side 0
-    in x, 4 side 1
-    in x, 4 side 0
-    in x, 4 side 1
-    in x, 4 side 0
-    in null, 16 side 1
-
-.wrap_target
-    nop  side 0 [15]
-    push side 1
+    push side 0
     pull side 1
     pull side 0
-    pull side 0
-    nop  side 0 [15]
-.wrap
+    pull side 1
+    nop side 0
+    nop side 1
