@@ -6,16 +6,16 @@
 ; SET0-2 control the OE (output-enable) lines of the transceivers.
 ; SET3 selects the direction of the data transceiver (low=in, high=out).
 ;
-; read_addr SM    |      SET      |                 IN                 |
-; pin number    ->| 3 | 2 | 1 | 0 | 11  | 10  |  9  |  8  |   7..0     |
-; ----------------+---+---+---+---+-----+-----+-----+-----+------------+
-; data_out_in SM->|                       IN/OUT                       |
-; pin number    ->|15 |14 |13 |12 | 11  | 10  |  9  |  8  |   7..0     |
-; ----------------+---+---+---+---+-----+-----+-----+-----+------------+
-;        DATA_IN  | 0 | 1 | 1 | 0 | CLK | #RD | #CS | A15 | D7..D0 in  |
-;        DATA_OUT | 1 | 1 | 1 | 0 | CLK | #RD | #CS | A15 | D7..D0 out |
-;        ADDR_LO  | 0 | 1 | 0 | 1 | CLK | #RD | #CS | A15 | A7..A0     |
-;        ADDR_HI  | 0 | 0 | 1 | 1 | CLK | #RD | #CS | A15 |A15..A8     |
+; read_addr SM    |      SET      |                 IN                  |
+; pin number    ->| 3 | 2 | 1 | 0 | 11  | 10  |  9  |  8  |    7..0     |
+; ----------------+---+---+---+---+-----+-----+-----+-----+-------------+
+; data_out_in SM->|                       IN/OUT                        |
+; pin number    ->|15 |14 |13 |12 | 11  | 10  |  9  |  8  |    7..0     |
+; ----------------+---+---+---+---+-----+-----+-----+-----+-------------+
+;        DATA_IN  | 0 | 1 | 1 | 0 | CLK | #RD | #CS | A15 |  D7..D0 in  |
+;        DATA_OUT | 1 | 1 | 1 | 0 | CLK | #RD | #CS | A15 |  D7..D0 out |
+;        ADDR_LO  | 0 | 1 | 0 | 1 | CLK | #RD | #CS | A15 |  A7..A0     |
+;        ADDR_HI  | 0 | 0 | 1 | 1 | CLK | #RD | #CS | A15 | A15..A8     |
 
 .define public CARTRIDGE_BITS 12
 .define public CONTROL_BITS 4
@@ -43,31 +43,30 @@
 ; pico cycles to read the address lines right after it becomes ready.
 .define ADDR_SAMPLE_DELAY 15
 
-    ; Synchronize once so that the addr sample delay actually starts at the
-    ; rising edge.
+    ; Cycle 0 samples the rising edge we base all cycle counts on that.
+    ; Wait a half GB clock (=15 cycles) for the address lines to become ready.
+    ; Because PIO samples inputs very early the cycle we actually might have one
+    ; cycle additional delay (just to keep in mind for later).
+    ; Reference: https://forums.raspberrypi.com/viewtopic.php?t=321852#p1926757
     wait 0 pin CLK
-
-.wrap_target
-    ; The rising clock edge starts a bus access.
-    ; Wait a half GB clock for the address lines to become ready.
-    wait 1 pin CLK [ADDR_SAMPLE_DELAY-1] ; Delay starts after the execution.
+    wait 1 pin CLK [ADDR_SAMPLE_DELAY-1] ; cycle 0
 
     ; Read the address, ADDR_HI is selected already.
     in pins, 7 ; A14-A8, cycle 16
     set pins, ADDR_LO ; cycle 17
-    in pins, 8 ; A7-A0, cycle 18
-    ; autopush
-.wrap
+    in pins, 8 ; A7-A0, autopush, cycle 18
 
 ;------------------------------------------------------------------------------;
 
 .program data_out_in
 
     ; 16bit autopull is enabled for the RX FIFO to receive following data:
-    ; 16bit output data to select DATA_IN or DATA_OUT + D0-D7 pins
-    ; 8bit pindirs=0x00 for DATA_IN, pindirs=0xFF for DATA_OUT
-    ; 8bit pindirs=0x00 to reset GPIOs to inputs
-    ; 16bit output data to select ADDR_HI for the next cycle
+    ; 1. output data to select DATA_IN or DATA_OUT + D0-D7 pins
+    ; 2. pindirs=0x00 for DATA_IN, pindirs=0xFF for DATA_OUT
+    ; 3. pindirs=0x00 to reset GPIOs to inputs
+    ; 4. output data to select ADDR_HI for the next cycle
+
+    ;wait 0 pin CLK
 
     ; Data must be available at the third rising edge of GB clock which
     ; translates to a cycle count of 89.

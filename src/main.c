@@ -64,8 +64,8 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   c = dma_channel_get_default_config(addr_ch);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
-  channel_config_set_chain_to(&c, copy_rom_ch);
   channel_config_set_dreq(&c, addr_dreq);
+  channel_config_set_chain_to(&c, copy_rom_ch);
   dma_channel_configure(addr_ch, &c,
                         hw_set_alias(&dma_hw->ch[copy_rom_ch].read_addr),
                         addr_fifo, 1, false);
@@ -87,6 +87,7 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_read_increment(&c, true);
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
+  channel_config_set_ring(&c, false, 3);  // Wrap around on a 8 byte boundary.
   channel_config_set_chain_to(&c, reset_rom_addr_ch);
   dma_channel_configure(data_inout_ch, &c, data_fifo,
                         s_rom_out_command,  // Updated by address decoder.
@@ -115,7 +116,10 @@ static void init_cartridge_interface(PIO pio, uint pins) {
   for (int i = 0; i < CONTROL_BITS; i++) {
     pio_gpio_init(pio, control_pins + i);
   }
-  pio->input_sync_bypass |= (1 << (pins + CLK));
+
+  // Disable the synchronizer circuit for all cartridge signals.
+  // Makes waiting for CLK edges 2 cycles faster.
+  pio->input_sync_bypass |= (0x0FFF << pins);
 
   // Configure the `read_addr` state machine
   uint read_addr_sm = temp_sm;
