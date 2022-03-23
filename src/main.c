@@ -17,13 +17,18 @@
 
 // Pin Base:
 // 0 .. 7: D0-D7, A0-A7, A8-A15 - 8 bit multiplexed:
-// 8 ..11: CLK, A15, #CS, #RD
+// 8 ..11: A15, #CS, #RD, CLK
 // 12..15: OE0-2, DIR0
 #define PIN_BASE 2
 
 #define CARTRIDGE_PIO pio0
 #define CARTRIDGE_SM_ADDR 0
 #define CARTRIDGE_SM_DATA 1
+
+#define DMA_CH_RST_ROM_ADDR 0
+#define DMA_CH_ADDR_OFFSET 1
+#define DMA_CH_FLASH_TO_RAM 2
+#define DMA_CH_DATA_OUT 3
 
 // TODO: Include actual GB code
 static const uint8_t __in_flash() __aligned(ROM_SIZE) g_rom[ROM_SIZE] = {0xFF};
@@ -32,74 +37,75 @@ static const uint8_t __in_flash() __aligned(ROM_SIZE) g_rom[ROM_SIZE] = {0xFF};
 static volatile uintptr_t s_rom_addr;
 
 // GB reads ROM, we provide the data.
-static volatile uint16_t s_rom_out_command[4] = {
+static volatile uint16_t s_cmd_rom_out[4] = {
     // DMA writes actual ROM data to the first byte before we send this
     // command sequence to the SM.
-    DATA_OUT << 12 | 0xAA,  // pins
-    0xF0FF,                 // pindir: Sets D0-D7 to output.
-    0xF000,                 // pindir: Resets D0-D7 to input.
-    // Release the data lines by switching transceiver.
-    ADDR_HI << 12 | 0xAA,  // pins
+    DATA_OUT << 12, 0xF0FF,  // Write data in first byte to D0-D7.
+    0xF000, ADDR_HI << 12,   // Release the data lines by switching transceiver.
+};
+
+static volatile uint16_t s_cmd_idle[4] = {
+    DATA_IN << 12, 0xF000,  // No output
+    0xF000, ADDR_HI << 12,  // No output
 };
 
 static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
                      volatile void *data_fifo) {
-  // Read ROM data DMA chain
-  int reset_rom_addr_ch = dma_claim_unused_channel(true);
-  int addr_ch = dma_claim_unused_channel(true);
-  int copy_rom_ch = dma_claim_unused_channel(true);
-  int data_inout_ch = dma_claim_unused_channel(true);
+  dma_claim_mask((1 << DMA_CH_RST_ROM_ADDR) | (1 << DMA_CH_ADDR_OFFSET) |
+                 (1 << DMA_CH_FLASH_TO_RAM) | (1 << DMA_CH_DATA_OUT));
   dma_channel_config c;
 
-  // Step 1: Reset `copy_rom_ch` read register to start of ROM memory bank.
+  // Step 1: Reset `DMA_CH_FLASH_TO_RAM` read register to start of ROM memory
+  // bank.
   s_rom_addr = (uintptr_t)xip_nocache_noalloc_alias_untyped(&g_rom);
-  c = dma_channel_get_default_config(reset_rom_addr_ch);
+  c = dma_channel_get_default_config(DMA_CH_RST_ROM_ADDR);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
-  channel_config_set_chain_to(&c, addr_ch);
-  dma_channel_configure(reset_rom_addr_ch, &c,
-                        &dma_hw->ch[copy_rom_ch].read_addr, &s_rom_addr, 1,
-                        false);
+  channel_config_set_chain_to(&c, DMA_CH_ADDR_OFFSET);
+  dma_channel_configure(DMA_CH_RST_ROM_ADDR, &c,
+                        &dma_hw->ch[DMA_CH_FLASH_TO_RAM].read_addr, &s_rom_addr,
+                        1, false);
 
   // Step 2: Get the ROM address from the `read_addr` SM and use it as offset
   //         into the current ROM bank. Directly write the offset to the read
-  //         register of the `copy_rom_ch` dma channel. Use the atomic set alias
-  //         memory address to add the offset without overwriting.
-  c = dma_channel_get_default_config(addr_ch);
+  //         register of the `DMA_CH_FLASH_TO_RAM` dma channel. Use the atomic
+  //         set alias memory address to add the offset without overwriting.
+  c = dma_channel_get_default_config(DMA_CH_ADDR_OFFSET);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
   channel_config_set_dreq(&c, addr_dreq);
-  channel_config_set_chain_to(&c, copy_rom_ch);
-  dma_channel_configure(addr_ch, &c,
-                        hw_set_alias(&dma_hw->ch[copy_rom_ch].read_addr),
-                        addr_fifo, 1, false);
+  channel_config_set_chain_to(&c, DMA_CH_FLASH_TO_RAM);
+  dma_channel_configure(
+      DMA_CH_ADDR_OFFSET, &c,
+      hw_set_alias(&dma_hw->ch[DMA_CH_FLASH_TO_RAM].read_addr), addr_fifo, 1,
+      false);
 
   // Step 3: Copy from ROM to temporary memory location.
   //         This takes ~50 cycles because it accesses flash and makes it the
   //         slowest operation of a bus access cycle.
-  c = dma_channel_get_default_config(copy_rom_ch);
+  c = dma_channel_get_default_config(DMA_CH_FLASH_TO_RAM);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
-  channel_config_set_chain_to(&c, data_inout_ch);
-  dma_channel_configure(copy_rom_ch, &c, &s_rom_out_command[0],
+  channel_config_set_chain_to(&c, DMA_CH_DATA_OUT);
+  dma_channel_configure(DMA_CH_FLASH_TO_RAM, &c, &s_cmd_rom_out[0],
                         NULL,  // Calculated in step 1 and 2.
                         1, false);
 
   // Step 4: Transfer the selected command to the `data_out_in` SM.
-  c = dma_channel_get_default_config(data_inout_ch);
+  c = dma_channel_get_default_config(DMA_CH_DATA_OUT);
   channel_config_set_read_increment(&c, true);
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
   channel_config_set_ring(&c, false, 3);  // Wrap around on a 8 byte boundary.
-  channel_config_set_chain_to(&c, reset_rom_addr_ch);
-  dma_channel_configure(data_inout_ch, &c, data_fifo,
-                        s_rom_out_command,  // Updated by address decoder.
+  channel_config_set_chain_to(&c, DMA_CH_RST_ROM_ADDR);
+  dma_channel_configure(DMA_CH_DATA_OUT, &c, data_fifo,
+                        NULL,  // Updated by address decoder.
                         4, false);
 
   // TODO: Independent DMA channel to pull data from `data_out_in`.
 
-  dma_channel_start(reset_rom_addr_ch);
+  dma_channel_start(DMA_CH_RST_ROM_ADDR);
 }
 
 static void init_cartridge_interface(PIO pio, uint pins) {
@@ -185,15 +191,36 @@ static uint init_memory_benchmark(PIO pio, uint pin) {
   return sm;
 }
 
-static void __attribute__((optimize("Os"))) 
+static void __attribute__((optimize("O3")))
 __no_inline_not_in_flash_func(address_decoder)(PIO pio, uint sm) {
-  pio_sm_set_enabled(pio, sm, true); // Temporary for testing
+  pio_sm_set_enabled(pio, sm, true);  // Temporary for testing
+
+  const uint32_t kRomRead = ~(A15 | nRD) & 0b111;
+  // TODO: honor secondary chip selects (A13 and A14)
+  const uint32_t kMbcWrite = ~A15 & 0b111;
+  const uint32_t kRamRead = ~(nCS | nRD) & 0b111;
+  const uint32_t kRamWrite = ~nCS & 0b111;
 
   while (true) {
-    // TODO: Address decoder
+    // The chip select happens on cycle 30 and we need the DMA register updated
+    // by cycle ~80 which means our loop cannot take more than 50 cycles.
+    //
+    // A rough cycle count from disassembly gives a worst case idle loop time
+    // of 12 cycles. Assuming we miss the chip select change just barely we
+    // need to loop a second time to catch it giving us a worst case latency
+    // of ~20 cycles.
+    uint32_t signals = (sio_hw->gpio_in >> (PIN_BASE + 8)) & 0b111;
+    switch (signals) {
+      case kRomRead:
+        dma_channel_set_read_addr(DMA_CH_DATA_OUT, &s_cmd_rom_out, false);
+        break;
+      default:
+        dma_channel_set_read_addr(DMA_CH_DATA_OUT, &s_cmd_idle, false);
+        break;
+    }
 
-    // Continously read `data_out_in` FIFO to keep it emtpy and the SM running.
-    (void)CARTRIDGE_PIO->rxf[CARTRIDGE_SM_DATA];
+    // Pull input data so that the SM does not stall.
+    pio_sm_get(CARTRIDGE_PIO, CARTRIDGE_SM_DATA);
   }
 }
 
