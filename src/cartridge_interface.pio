@@ -52,9 +52,9 @@
     wait 1 pin CLK [ADDR_SAMPLE_DELAY-1] ; cycle 0
 
     ; Read the address, ADDR_HI is selected already.
-    in pins, 7 ; A14-A8, cycle 16
-    set pins, ADDR_LO ; cycle 17
-    in pins, 8 ; A7-A0, autopush, cycle 18
+    in pins, 7 ; A14-A8, cycle 15
+    set pins, ADDR_LO ; cycle 16
+    in pins, 8 ; A7-A0, autopush, cycle 17
 
 ;------------------------------------------------------------------------------;
 
@@ -72,10 +72,10 @@
     ; takes 62 cycles.
 
     ; Write output data (or not when selecting DATA_IN).
-    pull ; cycle 18 + 62 = 80
-    out pins, 16 ; cycle 81
-    out pindirs, 16 ; cycle 82
-    ; Deadline is met with 7 cycles spare.
+    pull ; cycle 17 + 62 = 79
+    out pins, 16 ; cycle 80
+    out pindirs, 16 ; cycle 81
+    ; Deadline is met with 8 cycles spare.
     ; TODO: Adjust ADDR_SAMPLE_DELAY to improve stablity.
 
     ; Read data. It will discarded later for DATA_OUT.
