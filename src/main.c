@@ -192,6 +192,7 @@ static void init_cartridge_interface(PIO pio, uint pins) {
                          true, 15);  // autopush enabled
   pio_sm_init(pio, CARTRIDGE_SM_ADDR, offset, &c);
   pio_sm_set_enabled(pio, CARTRIDGE_SM_ADDR, true);
+  pio_set_irq0_source_enabled(pio, PIO_INTR_SM0_LSB, true);
 
   // Configure the `data_out_in` state machine
   pio_sm_claim(pio, CARTRIDGE_SM_DATA);
@@ -246,23 +247,13 @@ static void __attribute__((optimize("O3")))
 __no_inline_not_in_flash_func(address_decoder)(PIO pio, uint sm) {
   pio_sm_set_enabled(pio, sm, true);  // Temporary for testing
 
-  const uint32_t kRomRead = ~(A15 | nRD) & 0b111;
-  // TODO: honor secondary chip selects (A13 and A14)
-  const uint32_t kMbcWrite = ~A15 & 0b111;
-  const uint32_t kRamRead = ~(nCS | nRD) & 0b111;
-  const uint32_t kRamWrite = ~nCS & 0b111;
-
   while (true) {
-    // The chip select happens on cycle 30 and we need the DMA register updated
-    // by cycle ~80 which means our loop cannot take more than 50 cycles.
-    //
-    // A rough cycle count from disassembly gives a worst case idle loop time
-    // of 12 cycles. Assuming we miss the chip select change just barely we
-    // need to loop a second time to catch it giving us a worst case latency
-    // of ~20 cycles.
-    uint32_t signals = (sio_hw->gpio_in >> (PIN_BASE + 8)) & 0b111;
-    switch (signals) {
-      case kRomRead:
+    while (!pio_interrupt_get(CARTRIDGE_PIO, 0))
+      ;
+
+    uint32_t signals = pio_sm_get_blocking(CARTRIDGE_PIO, CARTRIDGE_SM_DATA);
+    switch (signals >> 8) {
+      case ROM_READ:
         dma_channel_set_read_addr(DMA_CH_DATA_OUT, &s_cmd_rom_out, false);
         break;
       default:

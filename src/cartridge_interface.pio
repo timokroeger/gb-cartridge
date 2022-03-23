@@ -6,6 +6,7 @@
 ; SET0-2 control the OE (output-enable) lines of the transceivers.
 ; SET3 selects the direction of the data transceiver (low=in, high=out).
 ;
+; TODO: A15 pin not required
 ; read_addr SM    |      SET      |                 IN                  |
 ; pin number    ->| 3 | 2 | 1 | 0 | 11  | 10  |  9  |  8  |    7..0     |
 ; ----------------+---+---+---+---+-----+-----+-----+-----+-------------+
@@ -31,30 +32,41 @@
 .define public nRD 10
 .define public CLK 11
 
+.define public ROM_READ  0b010
+.define public MBC_WRITE 0b110
+.define public RAM_READ  0b001
+.define public RAM_WRITE 0b101
+
 ;------------------------------------------------------------------------------;
 
 .program read_addr
 
-; PICO clock = 125MHz
-; GB clock = 4^22Hz = ~4Mhz
-; BUS clock = GB clock / 4 = 2^10Hz = ~1MHz
-; The Gameboy writes the address to the bus at the first falling edge of GB
-; clock. We use the rising edge of the BUS clock as reference and then count
-; pico cycles to read the address lines right after it becomes ready.
-.define ADDR_SAMPLE_DELAY 15
-
-    ; Cycle 0 samples the rising edge we base all cycle counts on that.
-    ; Wait a half GB clock (=15 cycles) for the address lines to become ready.
-    ; Because PIO samples inputs very early the cycle we actually might have one
-    ; cycle additional delay (just to keep in mind for later).
+    ; PICO clock = 125MHz
+    ; GB clock = 4^22Hz = ~4Mhz
+    ; BUS clock = GB clock / 4 = 2^10Hz = ~1MHz
+    ;
+    ; We use the rising edge of the BUS clock as reference (cycle 0) for PIO
+    ; cycle counts within a BUS access cycle.
+    ; The Gameboy writes the address to the bus at the first falling edge of
+    ; the GB clock which means we need to wait 15 cyles for the address lines
+    ; to become ready.
+    ; Because PIO samples inputs very early the cycle we actually might have
+    ; one cycle additional delay (just to keep in mind for later).
     ; Reference: https://forums.raspberrypi.com/viewtopic.php?t=321852#p1926757
     wait 0 pin CLK
-    wait 1 pin CLK [ADDR_SAMPLE_DELAY-1] ; cycle 0
+    wait 1 pin CLK [14] ; the delay starts after the pin is high       cycle  0
 
     ; Read the address, ADDR_HI is selected already.
-    in pins, 7 ; A14-A8, cycle 15
-    set pins, ADDR_LO ; cycle 16
-    in pins, 8 ; A7-A0, autopush, cycle 17
+    in pins, 7 ; A14-A8                                                cycle 15
+    set pins, ADDR_LO ;                                                cycle 16
+    in pins, 8 ; A7-A0, autopush                                       cycle 17
+
+    ; The Gameboy updates the A15 or and #CS lines on the second rising GB
+    ; clock edge. Wait until cycle 30 to sample those.
+    set pins, ADDR_HI ;                                                cycle 18
+    in null, 4 ; dummy input to make autopush work on next in          cycle 19
+    irq 0 [9]; notify address decoder to poll for data                 cycle 20
+    in pins, 11 ; autopush                                             cycle 30
 
 ;------------------------------------------------------------------------------;
 
@@ -72,9 +84,9 @@
     ; takes 62 cycles.
 
     ; Write output data (or not when selecting DATA_IN).
-    pull ; cycle 17 + 62 = 79
-    out pins, 16 ; cycle 80
-    out pindirs, 16 ; cycle 81
+    pull ;                                                   cycle 17 + 62 = 79
+    out pins, 16 ;                                                     cycle 80
+    out pindirs, 16 ;                                                  cycle 81
     ; Deadline is met with 8 cycles spare.
     ; TODO: Adjust ADDR_SAMPLE_DELAY to improve stablity.
 
