@@ -20,7 +20,7 @@
 .define public CARTRIDGE_BITS 12
 .define public CONTROL_BITS 4
 
-.define public CONTROL_MASK 0x1111
+.define public CONTROL_MASK 0b1111
 .define public DATA_IN      0b0110
 .define public DATA_OUT     0b1110
 .define public ADDR_LO      0b0101
@@ -60,21 +60,20 @@
 
 .program data_out_in
 
-    ; 16bit autopull is enabled for the RX FIFO to receive following data:
-    ; 1. output data to select DATA_IN or DATA_OUT + D0-D7 pins
-    ; 2. pindirs=0x00 for DATA_IN, pindirs=0xFF for DATA_OUT
-    ; 3. pindirs=0x00 to reset GPIOs to inputs
-    ; 4. output data to select ADDR_HI for the next cycle
+    ; Initialize X with the release data lines command.
+    pull
+    out x, 16
 
-    ;wait 0 pin CLK
+.wrap_target
 
     ; Data must be available at the third rising edge of GB clock which
     ; translates to a cycle count of 89.
     ; The loop of `read_addr` RX FIFO -> DMA chain -> `data_out_in` TX FIFO
-    ; takes 63 cycles.
+    ; takes 62 cycles.
 
     ; Write output data (or not when selecting DATA_IN).
-    out pins, 16 ; cycle 18 + 63 = 81
+    pull ; cycle 18 + 62 = 80
+    out pins, 16 ; cycle 81
     out pindirs, 16 ; cycle 82
     ; Deadline is met with 7 cycles spare.
     ; TODO: Adjust ADDR_SAMPLE_DELAY to improve stablity.
@@ -83,9 +82,12 @@
     in pins, 8
 
     ; Release the data lines at the end of the cycle.
+    mov osr, x
     wait 1 pin CLK
     out pindirs, 16
     out pins, 16
+
+.wrap
 
 ;------------------------------------------------------------------------------;
 

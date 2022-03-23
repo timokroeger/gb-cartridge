@@ -30,6 +30,20 @@
 #define DMA_CH_FLASH_TO_RAM 2
 #define DMA_CH_DATA_OUT 3
 
+// pindir in upper word
+// pin data in lower word
+#define DATA_CMD_OUT                                            \
+  ((((uint32_t)CONTROL_MASK << CARTRIDGE_BITS) | 0xFF) << 16) | \
+      (DATA_OUT << CARTRIDGE_BITS)
+#define DATA_CMD_IN                                    \
+  (((uint32_t)CONTROL_MASK << CARTRIDGE_BITS) << 16) | \
+      (DATA_IN << CARTRIDGE_BITS)
+
+// pin in upper word
+// pindir data in lower word
+#define DATA_CMD_RELEASE \
+  ((ADDR_HI << CARTRIDGE_BITS) << 16) | (CONTROL_MASK << CARTRIDGE_BITS)
+
 // https://github.com/svendahlstrand/10-print-game-boy
 static const uint8_t __in_flash() __aligned(ROM_SIZE) g_rom[ROM_SIZE] = {
     0x03, 0x03, 0x07, 0x07, 0x0E, 0x0E, 0x1C, 0x1C, 0x38, 0x38, 0x70, 0x70,
@@ -83,18 +97,9 @@ static const uint8_t __in_flash() __aligned(ROM_SIZE) g_rom[ROM_SIZE] = {
 // Pointer to the start of the current ROM memory bank.
 static volatile uintptr_t s_rom_addr;
 
-// GB reads ROM, we provide the data.
-static volatile uint16_t s_cmd_rom_out[4] = {
-    // DMA writes actual ROM data to the first byte before we send this
-    // command sequence to the SM.
-    DATA_OUT << 12, 0xF0FF,  // Write data in first byte to D0-D7.
-    0xF000, ADDR_HI << 12,   // Release the data lines by switching transceiver.
-};
-
-static volatile uint16_t s_cmd_idle[4] = {
-    DATA_IN << 12, 0xF000,  // No output
-    0xF000, ADDR_HI << 12,  // No output
-};
+// DMA writes actual data to the first byte before we send a command to the SM.
+static volatile uint32_t s_cmd_rom_out = DATA_CMD_OUT;
+static volatile uint32_t s_cmd_idle = DATA_CMD_IN;
 
 static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
                      volatile void *data_fifo) {
@@ -135,20 +140,18 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
   channel_config_set_chain_to(&c, DMA_CH_DATA_OUT);
-  dma_channel_configure(DMA_CH_FLASH_TO_RAM, &c, &s_cmd_rom_out[0],
+  dma_channel_configure(DMA_CH_FLASH_TO_RAM, &c, &s_cmd_rom_out,
                         NULL,  // Calculated in step 1 and 2.
                         1, false);
 
   // Step 4: Transfer the selected command to the `data_out_in` SM.
   c = dma_channel_get_default_config(DMA_CH_DATA_OUT);
-  channel_config_set_read_increment(&c, true);
+  channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
-  channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
-  channel_config_set_ring(&c, false, 3);  // Wrap around on a 8 byte boundary.
   channel_config_set_chain_to(&c, DMA_CH_RST_ROM_ADDR);
   dma_channel_configure(DMA_CH_DATA_OUT, &c, data_fifo,
                         NULL,  // Updated by address decoder.
-                        4, false);
+                        1, false);
 
   // TODO: Independent DMA channel to pull data from `data_out_in`.
 
@@ -196,12 +199,13 @@ static void init_cartridge_interface(PIO pio, uint pins) {
   c = data_out_in_program_get_default_config(offset);
   sm_config_set_in_pins(&c, pins);
   sm_config_set_out_pins(&c, pins, CARTRIDGE_BITS + CONTROL_BITS);
-  sm_config_set_out_shift(&c, true,   // shift_direction=right
-                          true, 16);  // autopull enabled
-  sm_config_set_in_shift(&c, false,   // shift_direction=left
-                         true, 8);    // autopush enabled
+  sm_config_set_out_shift(&c, true,    // shift_direction=right
+                          false, 32);  // autopull disabled
+  sm_config_set_in_shift(&c, false,    // shift_direction=left
+                         true, 8);     // autopush enabled
   pio_sm_init(pio, CARTRIDGE_SM_DATA, offset, &c);
   pio_sm_set_enabled(pio, CARTRIDGE_SM_DATA, true);
+  pio_sm_put(pio, CARTRIDGE_SM_DATA, DATA_CMD_RELEASE);
 
   // DMA chain to connect the two state machines
   init_dma(pio_get_dreq(pio, CARTRIDGE_SM_ADDR, false),
