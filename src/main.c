@@ -21,6 +21,10 @@
 // 12..15: OE0-2, DIR0
 #define PIN_BASE 2
 
+#define CARTRIDGE_PIO pio0
+#define CARTRIDGE_SM_ADDR 0
+#define CARTRIDGE_SM_DATA 1
+
 // TODO: Include actual GB code
 static const uint8_t __in_flash() __aligned(ROM_SIZE) g_rom[ROM_SIZE] = {0xFF};
 
@@ -116,24 +120,25 @@ static void init_cartridge_interface(PIO pio, uint pins) {
   for (int i = 0; i < CONTROL_BITS; i++) {
     pio_gpio_init(pio, control_pins + i);
   }
+  pio_sm_unclaim(pio, temp_sm);
 
   // Disable the synchronizer circuit for all cartridge signals.
   // Makes waiting for CLK edges 2 cycles faster.
   pio->input_sync_bypass |= (0x0FFF << pins);
 
   // Configure the `read_addr` state machine
-  uint read_addr_sm = temp_sm;
+  pio_sm_claim(pio, CARTRIDGE_SM_ADDR);
   offset = pio_add_program(pio, &read_addr_program);
   c = read_addr_program_get_default_config(offset);
   sm_config_set_in_pins(&c, pins);
   sm_config_set_set_pins(&c, control_pins, CONTROL_BITS);
   sm_config_set_in_shift(&c, false,  // shift_direction=left
                          true, 15);  // autopush enabled
-  pio_sm_init(pio, read_addr_sm, offset, &c);
-  pio_sm_set_enabled(pio, read_addr_sm, true);
+  pio_sm_init(pio, CARTRIDGE_SM_ADDR, offset, &c);
+  pio_sm_set_enabled(pio, CARTRIDGE_SM_ADDR, true);
 
   // Configure the `data_out_in` state machine
-  uint data_out_in_sm = pio_claim_unused_sm(pio, true);
+  pio_sm_claim(pio, CARTRIDGE_SM_DATA);
   offset = pio_add_program(pio, &data_out_in_program);
   c = data_out_in_program_get_default_config(offset);
   sm_config_set_in_pins(&c, pins);
@@ -142,12 +147,12 @@ static void init_cartridge_interface(PIO pio, uint pins) {
                           true, 16);  // autopull enabled
   sm_config_set_in_shift(&c, false,   // shift_direction=left
                          true, 8);    // autopush enabled
-  pio_sm_init(pio, data_out_in_sm, offset, &c);
-  pio_sm_set_enabled(pio, data_out_in_sm, true);
+  pio_sm_init(pio, CARTRIDGE_SM_DATA, offset, &c);
+  pio_sm_set_enabled(pio, CARTRIDGE_SM_DATA, true);
 
   // DMA chain to connect the two state machines
-  init_dma(pio_get_dreq(pio, read_addr_sm, false), &pio->rxf[read_addr_sm],
-           &pio->txf[data_out_in_sm]);
+  init_dma(pio_get_dreq(pio, CARTRIDGE_SM_ADDR, false),
+           &pio->rxf[CARTRIDGE_SM_ADDR], &pio->txf[CARTRIDGE_SM_DATA]);
 }
 
 static uint init_clk_emu(PIO pio, uint pin) {
@@ -180,15 +185,15 @@ static uint init_memory_benchmark(PIO pio, uint pin) {
   return sm;
 }
 
-static void __attribute__((optimize("O3")))
-__no_inline_not_in_flash_func(address_decoder)(void) {
-  // TODO: Address decoder
-}
+static void __attribute__((optimize("Os"))) 
+__no_inline_not_in_flash_func(address_decoder)(PIO pio, uint sm) {
+  pio_sm_set_enabled(pio, sm, true); // Temporary for testing
 
-static void __no_inline_not_in_flash_func(ram_sleep_loop)(PIO pio, uint sm) {
-  pio_sm_set_enabled(pio, sm, true);
   while (true) {
-    __wfi();
+    // TODO: Address decoder
+
+    // Continously read `data_out_in` FIFO to keep it emtpy and the SM running.
+    (void)CARTRIDGE_PIO->rxf[CARTRIDGE_SM_DATA];
   }
 }
 
@@ -213,12 +218,12 @@ int main() {
   printf("hello\n");
 
   init_cartridge_interface(pio0, PIN_BASE);
-  uint sm = init_clk_emu(pio0, 18);
+  uint sm = init_clk_emu(pio1, 18);
   // int sm = init_memory_benchmark(pio0, 20);
 
   // Make sure that no cade runs from flash memory anymore to guarantee for
   // constant flash access times.
-  ram_sleep_loop(pio0, sm);
+  address_decoder(pio0, sm);
 
   return 0;
 }

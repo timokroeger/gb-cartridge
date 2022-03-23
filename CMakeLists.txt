@@ -19,11 +19,11 @@ target_sources(gb-cartridge PRIVATE src/main.c)
 target_include_directories(gb-cartridge PRIVATE src)
 
 target_link_libraries(gb-cartridge
-    pico_stdlib
     hardware_clocks
     hardware_dma
     hardware_pio
     hardware_pll
+    pico_stdlib
 )
 
 pico_add_extra_outputs(gb-cartridge)
