@@ -130,11 +130,13 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
   channel_config_set_dreq(&c, addr_dreq);
-  channel_config_set_chain_to(&c, DMA_CH_FLASH_TO_RAM);
+  // Chaining cannot be used here because it starts the next DMA before its
+  // the read register received the update. Use the trigger feature instead
+  // to start step 3 with the write to the read register.
   dma_channel_configure(
       DMA_CH_ADDR_OFFSET, &c,
-      hw_set_alias(&dma_hw->ch[DMA_CH_FLASH_TO_RAM].read_addr), addr_fifo, 1,
-      false);
+      hw_set_alias(&dma_hw->ch[DMA_CH_FLASH_TO_RAM].al3_read_addr_trig),
+      addr_fifo, 1, false);
 
   // Step 3: Copy from ROM to temporary memory location.
   //         This takes ~50 cycles because it accesses flash and makes it the
@@ -156,8 +158,6 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
   dma_channel_configure(DMA_CH_DATA_CMD, &c, data_fifo,
                         NULL,  // Updated by address decoder.
                         1, false);
-
-  // TODO: Independent DMA channel to pull data from `data_out_in`.
 
   dma_channel_start(DMA_CH_RST_ROM_ADDR);
 }
@@ -233,13 +233,12 @@ __no_inline_not_in_flash_func(RunAddressDecoder)(const Simulation *sim) {
       ;
     pio_interrupt_clear(CARTRIDGE_PIO, 0);
 
-    uint32_t signals = pio_sm_get_blocking(CARTRIDGE_PIO, CARTRIDGE_SM_DATA);
-    // TODO: set debug pin high
+    uint32_t signals = pio_sm_get_blocking(CARTRIDGE_PIO, CARTRIDGE_SM_ADDR);
 
     uint32_t action = signals >> 16;
     uint32_t addr = signals & 0x7FFF;
-    if (action == RAM_READ &&
-        addr & 0xA000) {  // A15 and A13 as secondary high CS.
+    if (action == RAM_READ && addr & 0xA000) {
+      // A15 and A13 as secondary high CS.
       // Only update the data portion (lowest byte) of the command.
       *(volatile uint8_t *)&s_cmd_ram_out = g_ram[addr & 0x0FFF];
       dma_channel_set_read_addr(DMA_CH_DATA_CMD, &s_cmd_ram_out, false);
@@ -250,12 +249,13 @@ __no_inline_not_in_flash_func(RunAddressDecoder)(const Simulation *sim) {
       dma_channel_set_read_addr(DMA_CH_DATA_CMD, &s_cmd_in, false);
     }
 
-    // TODO: set debug pin low
-
     uint8_t data = pio_sm_get_blocking(CARTRIDGE_PIO, CARTRIDGE_SM_DATA);
-    if (action == RAM_WRITE &&
-        addr & 0xA000) {  // A15 and A13 as secondary high CS.
+    if (action == RAM_WRITE && addr & 0xA000) {
+      // A15 and A13 as secondary high CS.
       g_ram[addr & 0x0FFF] = data;
+    } else if (action == MBC_WRITE && addr < 0x8000 && addr & 0x4000) {
+      // A15 as primary and A14 as secondary high CS.
+      // TODO
     }
   }
 }
