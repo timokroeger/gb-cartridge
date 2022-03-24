@@ -11,6 +11,7 @@
 #include "hardware/pll.h"
 #include "hardware/sync.h"
 #include "pico/stdlib.h"
+#include "simulation.pio.h"
 
 #define ROM_SIZE (32 * 1024)
 #define RAM_SIZE (8 * 1024)
@@ -104,8 +105,8 @@ static volatile uint32_t s_cmd_rom_out = DATA_CMD_OUT;
 static volatile uint32_t s_cmd_ram_out = DATA_CMD_OUT;
 static volatile uint32_t s_cmd_in = DATA_CMD_IN;
 
-static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
-                     volatile void *data_fifo) {
+static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
+                    volatile void *data_fifo) {
   dma_claim_mask((1 << DMA_CH_RST_ROM_ADDR) | (1 << DMA_CH_ADDR_OFFSET) |
                  (1 << DMA_CH_FLASH_TO_RAM) | (1 << DMA_CH_DATA_CMD));
   dma_channel_config c;
@@ -161,7 +162,7 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   dma_channel_start(DMA_CH_RST_ROM_ADDR);
 }
 
-static void init_cartridge_interface(PIO pio, uint pins) {
+static void InitCartridgeInterface(PIO pio, uint pins) {
   uint offset;
   pio_sm_config c;
 
@@ -194,7 +195,6 @@ static void init_cartridge_interface(PIO pio, uint pins) {
   sm_config_set_in_shift(&c, false,  // shift_direction=left
                          true, 15);  // autopush enabled
   pio_sm_init(pio, CARTRIDGE_SM_ADDR, offset, &c);
-  pio_sm_set_enabled(pio, CARTRIDGE_SM_ADDR, true);
 
   // Configure the `data_out_in` state machine
   pio_sm_claim(pio, CARTRIDGE_SM_DATA);
@@ -207,47 +207,24 @@ static void init_cartridge_interface(PIO pio, uint pins) {
   sm_config_set_in_shift(&c, false,    // shift_direction=left
                          true, 8);     // autopush enabled
   pio_sm_init(pio, CARTRIDGE_SM_DATA, offset, &c);
-  pio_sm_set_enabled(pio, CARTRIDGE_SM_DATA, true);
   pio_sm_put(pio, CARTRIDGE_SM_DATA, DATA_CMD_RELEASE);
 
   // DMA chain to connect the two state machines
-  init_dma(pio_get_dreq(pio, CARTRIDGE_SM_ADDR, false),
-           &pio->rxf[CARTRIDGE_SM_ADDR], &pio->txf[CARTRIDGE_SM_DATA]);
-}
+  InitDma(pio_get_dreq(pio, CARTRIDGE_SM_ADDR, false),
+          &pio->rxf[CARTRIDGE_SM_ADDR], &pio->txf[CARTRIDGE_SM_DATA]);
 
-static uint init_clk_emu(PIO pio, uint pin) {
-  uint sm = pio_claim_unused_sm(pio, true);
+  // TODO: remove
+  // Run at 1MHz for easy cycle counting with a logic analyzer.
+  pio_sm_set_clkdiv_int_frac(pio, CARTRIDGE_SM_ADDR, 125, 0);
+  pio_sm_set_clkdiv_int_frac(pio, CARTRIDGE_SM_DATA, 125, 0);
 
-  pio_sm_set_consecutive_pindirs(pio, sm, pin, 2, true);
-  pio_gpio_init(pio, pin);
-  pio_gpio_init(pio, pin + 1);
-
-  uint offset = pio_add_program(pio, &clk_emu_program);
-  pio_sm_config c = clk_emu_program_get_default_config(offset);
-  sm_config_set_set_pins(&c, pin, 2);
-  sm_config_set_clkdiv_int_frac(&c, 15, 0);
-  pio_sm_init(pio, sm, offset, &c);
-  return sm;
-}
-
-static uint init_memory_benchmark(PIO pio, uint pin) {
-  uint sm = pio_claim_unused_sm(pio, true);
-
-  pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
-  pio_gpio_init(pio, pin);
-
-  init_dma(pio_get_dreq(pio, sm, false), &pio->rxf[sm], &pio->txf[sm]);
-
-  uint offset = pio_add_program(pio, &memory_benchmark_program);
-  pio_sm_config c = memory_benchmark_program_get_default_config(offset);
-  sm_config_set_sideset_pins(&c, pin);
-  pio_sm_init(pio, sm, offset, &c);
-  return sm;
+  pio_set_sm_mask_enabled(
+      pio, (1 << CARTRIDGE_SM_ADDR) | (1 << CARTRIDGE_SM_DATA), true);
 }
 
 static void __attribute__((optimize("O3")))
-__no_inline_not_in_flash_func(address_decoder)(PIO pio, uint sm) {
-  pio_sm_set_enabled(pio, sm, true);  // Temporary for testing
+__no_inline_not_in_flash_func(RunAddressDecoder)(const Simulation *sim) {
+  SimulationStart(sim);
 
   while (true) {
     // Wait until`read_addr` SM is ready to give us the address.
@@ -283,32 +260,19 @@ __no_inline_not_in_flash_func(address_decoder)(PIO pio, uint sm) {
 }
 
 int main() {
-  // Run system clock at 1MHz for easy cycle counting with a logic analyzer.
-  clock_configure(clk_ref, CLOCKS_CLK_REF_CTRL_SRC_VALUE_XOSC_CLKSRC, 0,
-                  XOSC_MHZ * MHZ, XOSC_MHZ * MHZ);
-  clock_configure(clk_sys, CLOCKS_CLK_SYS_CTRL_SRC_VALUE_CLK_REF, 0,
-                  XOSC_MHZ * MHZ, 1 * MHZ);
-  clock_configure(clk_peri, 0, CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_USB,
-                  48 * MHZ, 48 * MHZ);
-  pll_deinit(pll_sys);
-
-  // Have a clock ouput to verify our configuration.
-  clock_gpio_init(21, CLOCKS_CLK_GPOUT0_CTRL_AUXSRC_VALUE_CLK_SYS, 1);
-
   gpio_init(PICO_DEFAULT_LED_PIN);
   gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
   gpio_put(PICO_DEFAULT_LED_PIN, 1);
 
-  stdio_init_all();
-  printf("hello\n");
 
-  init_cartridge_interface(pio0, PIN_BASE);
-  uint sm = init_clk_emu(pio1, 18);
-  // int sm = init_memory_benchmark(pio0, 20);
+  InitCartridgeInterface(CARTRIDGE_PIO, PIN_BASE);
+
+  Simulation sim;
+  SimulationInit(&sim, pio1, 19, 15);
 
   // Make sure that no cade runs from flash memory anymore to guarantee for
   // constant flash access times.
-  address_decoder(pio0, sm);
+  RunAddressDecoder(&sim);
 
   return 0;
 }

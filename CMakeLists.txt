@@ -10,11 +10,12 @@ pico_sdk_init()
 
 add_executable(gb-cartridge)
 
-pico_generate_pio_header(gb-cartridge
-    ${CMAKE_CURRENT_LIST_DIR}/src/cartridge_interface.pio
-)
+pico_generate_pio_header(gb-cartridge ${CMAKE_CURRENT_LIST_DIR}/src/cartridge_interface.pio)
+pico_generate_pio_header(gb-cartridge ${CMAKE_CURRENT_LIST_DIR}/src/simulation.pio)
 
-target_sources(gb-cartridge PRIVATE src/main.c)
+target_sources(gb-cartridge PRIVATE
+    src/main.c
+)
 
 target_include_directories(gb-cartridge PRIVATE src)
 

@@ -1,0 +1,87 @@
+; TODO: License
+
+; bit3 A15 in/out
+; bit2 #CS out
+; bit1 #RD out
+; bit0 CLK out
+; jmp  DIR0 in
+
+; 125MHz / 60 / 31cyles = 67.2kHz update rate
+.program gb_sim
+    pull
+    mov x, osr
+.wrap_target
+    out pins, 4 [30]
+    out pins, 4 [30]
+    out pins, 4 [30]
+    out pins, 4 [30]
+    out pins, 4 [30]
+    out pins, 4 [30]
+    out pins, 4 [30]
+    out pins, 4 [29]
+    mov osr, x
+.wrap
+
+.program gb_sim_pindir
+start:
+    jmp pin set_input
+    set pindirs, 0b1111 ; all as output
+    jmp start
+set_input:
+    set pindirs, 0b0111 ; a15 as input
+
+% c-sdk {
+
+#include "hardware/pio.h"
+
+// output of 8 patters 4bit each
+#define SIM_ROM_RD 0b11011101010101010100010001000100u
+#define SIM_MBC_WR 0b11011111011101110110011001100110u
+#define SIM_RAM_RD 0b11011101100110011000100010001000u
+#define SIM_RAM_WR 0b11011111101110111010101010101010u
+
+typedef struct {
+  PIO pio;
+  uint sm_sim;
+  uint sm_sim_pindir;
+} Simulation;
+
+static inline void SimulationInit(Simulation *sim, PIO pio, uint pins, uint jmp_pin) {
+  assert(sim);
+
+  uint temp_sm = pio_claim_unused_sm(pio, true);
+
+  pio_sm_set_consecutive_pindirs(pio, temp_sm, pins, 3, true);
+  pio_sm_set_consecutive_pindirs(pio, temp_sm, pins + 3, 1, false);
+  pio_sm_set_consecutive_pindirs(pio, temp_sm, jmp_pin, 1, false);
+  pio_gpio_init(pio, pins);
+  pio_gpio_init(pio, pins + 1);
+  pio_gpio_init(pio, pins + 2);
+  pio_gpio_init(pio, pins + 3);
+
+  uint sm_sim = temp_sm;
+  uint offset = pio_add_program(pio, &gb_sim_program);
+  pio_sm_config c = gb_sim_program_get_default_config(offset);
+  sm_config_set_out_pins(&c, pins, 4);
+  sm_config_set_out_shift(&c, false, false, 32);
+  sm_config_set_clkdiv_int_frac(&c, 60, 0);
+  pio_sm_init(pio, sm_sim, offset, &c);
+  pio_sm_put(pio, sm_sim, SIM_ROM_RD);
+
+  uint sm_sim_pindir = pio_claim_unused_sm(pio, true);
+  offset = pio_add_program(pio, &gb_sim_pindir_program);
+  c = gb_sim_pindir_program_get_default_config(offset);
+  sm_config_set_set_pins(&c, pins, 4);
+  sm_config_set_jmp_pin(&c, jmp_pin);
+  pio_sm_init(pio, sm_sim_pindir, offset, &c);
+
+  sim->pio = pio;
+  sim->sm_sim = sm_sim;
+  sim->sm_sim_pindir = sm_sim_pindir;
+}
+
+static inline void SimulationStart(const Simulation *sim) {
+  pio_set_sm_mask_enabled(sim->pio,
+                          (1 << sim->sm_sim) | (1 << sim->sm_sim_pindir), true);
+}
+%}
