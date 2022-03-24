@@ -32,6 +32,7 @@
 .define public nRD 10
 .define public CLK 11
 
+.define public IDLE      0b011
 .define public ROM_READ  0b010
 .define public MBC_WRITE 0b110
 .define public RAM_READ  0b001
@@ -54,19 +55,21 @@
     ; one cycle additional delay (just to keep in mind for later).
     ; Reference: https://forums.raspberrypi.com/viewtopic.php?t=321852#p1926757
     wait 0 pin CLK
-    wait 1 pin CLK [14] ; the delay starts after the pin is high       cycle  0
+    wait 1 pin CLK [14]     ; the delay starts after the pin is high   cycle  0
 
     ; Read the address, ADDR_HI is selected already.
-    in pins, 7 ; A14-A8                                                cycle 15
+    in pins, 7              ; A14-A8                                   cycle 15
     set pins, ADDR_LO ;                                                cycle 16
-    in pins, 8 ; A7-A0, autopush                                       cycle 17
+    in pins, 8              ; A7-A0, autopush                          cycle 17
+    ; DMA flash access now runs in parallel
+
+    irq 0                   ; notify address decoder to poll for data  cycle 18
 
     ; The Gameboy updates the A15 or and #CS lines on the second rising GB
     ; clock edge. Wait until cycle 30 to sample those.
-    set pins, ADDR_HI ;                                                cycle 18
-    in null, 4 ; dummy input to make autopush work on next in          cycle 19
-    irq 0 [9]; notify address decoder to poll for data                 cycle 20
-    in pins, 11 ; autopush                                             cycle 30
+    set pins, ADDR_HI [10]  ;                                          cycle 19
+    in pins, 12             ; #RD, #CS, A15, A15..A8                   cycle 30
+    in pins, 11             ; A7-A0, autopush                          cycle 31
 
 ;------------------------------------------------------------------------------;
 
@@ -84,9 +87,9 @@
     ; takes 62 cycles.
 
     ; Write output data (or not when selecting DATA_IN).
-    pull ;                                                   cycle 17 + 62 = 79
-    out pins, 16 ;                                                     cycle 80
-    out pindirs, 16 ;                                                  cycle 81
+    pull                    ;                                 cycle 17 + 62 = 79
+    out pins, 16            ;                                           cycle 80
+    out pindirs, 16         ;                                           cycle 81
     ; Deadline is met with 8 cycles spare.
     ; TODO: Adjust ADDR_SAMPLE_DELAY to improve stablity.
 

@@ -12,8 +12,8 @@
 #include "hardware/sync.h"
 #include "pico/stdlib.h"
 
-// Just enough for simple games like Tetris or Dr. Mario.
 #define ROM_SIZE (32 * 1024)
+#define RAM_SIZE (8 * 1024)
 
 // Pin Base:
 // 0 .. 7: D0-D7, A0-A7, A8-A15 - 8 bit multiplexed:
@@ -28,7 +28,7 @@
 #define DMA_CH_RST_ROM_ADDR 0
 #define DMA_CH_ADDR_OFFSET 1
 #define DMA_CH_FLASH_TO_RAM 2
-#define DMA_CH_DATA_OUT 3
+#define DMA_CH_DATA_CMD 3
 
 // pindir in upper word
 // pin data in lower word
@@ -94,17 +94,20 @@ static const uint8_t __in_flash() __aligned(ROM_SIZE) g_rom[ROM_SIZE] = {
     0xC2, 0x22, 0x02, 0x11, 0x00, 0x98, 0x21, 0x00, 0xC0, 0x73, 0x23, 0x72,
     0xE1, 0xF1, 0xC9};
 
+static uint8_t g_ram[RAM_SIZE];
+
 // Pointer to the start of the current ROM memory bank.
 static volatile uintptr_t s_rom_addr;
 
 // DMA writes actual data to the first byte before we send a command to the SM.
 static volatile uint32_t s_cmd_rom_out = DATA_CMD_OUT;
-static volatile uint32_t s_cmd_idle = DATA_CMD_IN;
+static volatile uint32_t s_cmd_ram_out = DATA_CMD_OUT;
+static volatile uint32_t s_cmd_in = DATA_CMD_IN;
 
 static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
                      volatile void *data_fifo) {
   dma_claim_mask((1 << DMA_CH_RST_ROM_ADDR) | (1 << DMA_CH_ADDR_OFFSET) |
-                 (1 << DMA_CH_FLASH_TO_RAM) | (1 << DMA_CH_DATA_OUT));
+                 (1 << DMA_CH_FLASH_TO_RAM) | (1 << DMA_CH_DATA_CMD));
   dma_channel_config c;
 
   // Step 1: Reset `DMA_CH_FLASH_TO_RAM` read register to start of ROM memory
@@ -139,17 +142,17 @@ static void init_dma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
-  channel_config_set_chain_to(&c, DMA_CH_DATA_OUT);
+  channel_config_set_chain_to(&c, DMA_CH_DATA_CMD);
   dma_channel_configure(DMA_CH_FLASH_TO_RAM, &c, &s_cmd_rom_out,
                         NULL,  // Calculated in step 1 and 2.
                         1, false);
 
   // Step 4: Transfer the selected command to the `data_out_in` SM.
-  c = dma_channel_get_default_config(DMA_CH_DATA_OUT);
+  c = dma_channel_get_default_config(DMA_CH_DATA_CMD);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
   channel_config_set_chain_to(&c, DMA_CH_RST_ROM_ADDR);
-  dma_channel_configure(DMA_CH_DATA_OUT, &c, data_fifo,
+  dma_channel_configure(DMA_CH_DATA_CMD, &c, data_fifo,
                         NULL,  // Updated by address decoder.
                         1, false);
 
@@ -192,7 +195,6 @@ static void init_cartridge_interface(PIO pio, uint pins) {
                          true, 15);  // autopush enabled
   pio_sm_init(pio, CARTRIDGE_SM_ADDR, offset, &c);
   pio_sm_set_enabled(pio, CARTRIDGE_SM_ADDR, true);
-  pio_set_irq0_source_enabled(pio, PIO_INTR_SM0_LSB, true);
 
   // Configure the `data_out_in` state machine
   pio_sm_claim(pio, CARTRIDGE_SM_DATA);
@@ -248,21 +250,35 @@ __no_inline_not_in_flash_func(address_decoder)(PIO pio, uint sm) {
   pio_sm_set_enabled(pio, sm, true);  // Temporary for testing
 
   while (true) {
+    // Wait until`read_addr` SM is ready to give us the address.
     while (!pio_interrupt_get(CARTRIDGE_PIO, 0))
       ;
+    pio_interrupt_clear(CARTRIDGE_PIO, 0);
 
     uint32_t signals = pio_sm_get_blocking(CARTRIDGE_PIO, CARTRIDGE_SM_DATA);
-    switch (signals >> 8) {
-      case ROM_READ:
-        dma_channel_set_read_addr(DMA_CH_DATA_OUT, &s_cmd_rom_out, false);
-        break;
-      default:
-        dma_channel_set_read_addr(DMA_CH_DATA_OUT, &s_cmd_idle, false);
-        break;
+    // TODO: set debug pin high
+
+    uint32_t action = signals >> 16;
+    uint32_t addr = signals & 0x7FFF;
+    if (action == RAM_READ &&
+        addr & 0xA000) {  // A15 and A13 as secondary high CS.
+      // Only update the data portion (lowest byte) of the command.
+      *(volatile uint8_t *)&s_cmd_ram_out = g_ram[addr & 0x0FFF];
+      dma_channel_set_read_addr(DMA_CH_DATA_CMD, &s_cmd_ram_out, false);
+    } else if (action == ROM_READ && addr < 0x8000) {  // A15 as chip select
+      dma_channel_set_read_addr(DMA_CH_DATA_CMD, &s_cmd_rom_out, false);
+    } else {
+      // idle or write
+      dma_channel_set_read_addr(DMA_CH_DATA_CMD, &s_cmd_in, false);
     }
 
-    // Pull input data so that the SM does not stall.
-    pio_sm_get(CARTRIDGE_PIO, CARTRIDGE_SM_DATA);
+    // TODO: set debug pin low
+
+    uint8_t data = pio_sm_get_blocking(CARTRIDGE_PIO, CARTRIDGE_SM_DATA);
+    if (action == RAM_WRITE &&
+        addr & 0xA000) {  // A15 and A13 as secondary high CS.
+      g_ram[addr & 0x0FFF] = data;
+    }
   }
 }
 
