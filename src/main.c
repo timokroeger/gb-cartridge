@@ -9,9 +9,12 @@
 #include "hardware/dma.h"
 #include "hardware/pio.h"
 #include "hardware/pll.h"
+#include "hardware/structs/ssi.h"
 #include "hardware/sync.h"
 #include "pico/stdlib.h"
 #include "simulation.pio.h"
+
+#define UNDERCLOCK_RATIO 125
 
 #define ROM_SIZE (32 * 1024)
 #define RAM_SIZE (8 * 1024)
@@ -216,8 +219,8 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
 
   // TODO: remove
   // Run at 1MHz for easy cycle counting with a logic analyzer.
-  pio_sm_set_clkdiv_int_frac(pio, CARTRIDGE_SM_ADDR, 125, 0);
-  pio_sm_set_clkdiv_int_frac(pio, CARTRIDGE_SM_DATA, 125, 0);
+  pio_sm_set_clkdiv_int_frac(pio, CARTRIDGE_SM_ADDR, UNDERCLOCK_RATIO, 0);
+  pio_sm_set_clkdiv_int_frac(pio, CARTRIDGE_SM_DATA, UNDERCLOCK_RATIO, 0);
 
   pio_set_sm_mask_enabled(
       pio, (1 << CARTRIDGE_SM_ADDR) | (1 << CARTRIDGE_SM_DATA), true);
@@ -225,6 +228,11 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
 
 static void __attribute__((optimize("O3")))
 __no_inline_not_in_flash_func(RunAddressDecoder)(const Simulation *sim) {
+  // Underclock flash interface so that cycles match our slowed down simulation.
+  ssi_hw->ssienr = 0;
+  ssi_hw->baudr = 2 * 125;
+  ssi_hw->ssienr = 1;
+
   SimulationStart(sim);
 
   while (true) {
@@ -264,7 +272,6 @@ int main() {
   gpio_init(PICO_DEFAULT_LED_PIN);
   gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
   gpio_put(PICO_DEFAULT_LED_PIN, 1);
-
 
   InitCartridgeInterface(CARTRIDGE_PIO, PIN_BASE);
 
