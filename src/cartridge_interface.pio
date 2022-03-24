@@ -6,17 +6,16 @@
 ; SET0-2 control the OE (output-enable) lines of the transceivers.
 ; SET3 selects the direction of the data transceiver (low=in, high=out).
 ;
-; TODO: A15 pin not required
 ; read_addr SM    |      SET      |                 IN                  |
 ; pin number    ->| 3 | 2 | 1 | 0 | 11  | 10  |  9  |  8  |    7..0     |
 ; ----------------+---+---+---+---+-----+-----+-----+-----+-------------+
 ; data_out_in SM->|                       IN/OUT                        |
 ; pin number    ->|15 |14 |13 |12 | 11  | 10  |  9  |  8  |    7..0     |
 ; ----------------+---+---+---+---+-----+-----+-----+-----+-------------+
-;        DATA_IN  | 0 | 1 | 1 | 0 | CLK | #RD | #CS | A15 |  D7..D0 in  |
-;        DATA_OUT | 1 | 1 | 1 | 0 | CLK | #RD | #CS | A15 |  D7..D0 out |
-;        ADDR_LO  | 0 | 1 | 0 | 1 | CLK | #RD | #CS | A15 |  A7..A0     |
-;        ADDR_HI  | 0 | 0 | 1 | 1 | CLK | #RD | #CS | A15 | A15..A8     |
+;        DATA_IN  | 0 | 1 | 1 | 0 | CLK | #WR | #RD | #CS |  D7..D0 in  |
+;        DATA_OUT | 1 | 1 | 1 | 0 | CLK | #WR | #RD | #CS |  D7..D0 out |
+;        ADDR_LO  | 0 | 1 | 0 | 1 | CLK | #WR | #RD | #CS |  A7..A0     |
+;        ADDR_HI  | 0 | 0 | 1 | 1 | CLK | #WR | #RD | #CS | A15..A8     |
 
 .define public CARTRIDGE_BITS 12
 .define public CONTROL_BITS 4
@@ -27,16 +26,16 @@
 .define public ADDR_LO      0b0101
 .define public ADDR_HI      0b0011
 
-.define public A15 8
-.define public nCS 9
-.define public nRD 10
+.define public nCS 8
+.define public nRD 9
+.define public nWR 10
 .define public CLK 11
 
-.define public IDLE      0b011
-.define public ROM_READ  0b010
-.define public MBC_WRITE 0b110
-.define public RAM_READ  0b001
-.define public RAM_WRITE 0b101
+; Bitmask for #RD (bit1) and #CS (bit0)
+.define public ROM_READ  0b01
+.define public MBC_WRITE 0b11
+.define public RAM_READ  0b00
+.define public RAM_WRITE 0b10
 
 ;------------------------------------------------------------------------------;
 
@@ -57,7 +56,7 @@
     wait 0 pin CLK
     wait 1 pin CLK [14]     ; the delay starts after the pin is high   cycle  0
 
-    ; Read the address, ADDR_HI is selected already.
+    ; Read the address but ignore A15, ADDR_HI is selected already.
     in pins, 7              ; A14-A8                                   cycle 15
     set pins, ADDR_LO ;                                                cycle 16
     in pins, 8              ; A7-A0, autopush                          cycle 17
@@ -68,7 +67,7 @@
     ; The Gameboy updates the A15 or and #CS lines on the second rising GB
     ; clock edge. Wait until cycle 30 to sample those.
     set pins, ADDR_HI [10]  ;                                          cycle 19
-    in pins, 12             ; #RD, #CS, A15, A15..A8                   cycle 30
+    in pins, 10             ; #RD, #CS, A15..A8                        cycle 30
     in pins, 11             ; A7-A0, autopush                          cycle 31
 
 ;------------------------------------------------------------------------------;
