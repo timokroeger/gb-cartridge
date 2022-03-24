@@ -68,7 +68,8 @@
     ; clock edge. Wait until cycle 30 to sample those.
     set pins, ADDR_HI [10]  ;                                          cycle 19
     in pins, 10             ; #RD, #CS, A15..A8                        cycle 30
-    in pins, 11             ; A7-A0, autopush                          cycle 31
+    set pins, ADDR_LO       ;                                          cycle 31
+    in pins, 11             ; A7-A0, autopush                          cycle 32
 
 ;------------------------------------------------------------------------------;
 

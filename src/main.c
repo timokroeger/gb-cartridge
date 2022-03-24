@@ -20,7 +20,7 @@
 // 0 .. 7: D0-D7, A0-A7, A8-A15 - 8 bit multiplexed:
 // 8 ..11: A15, #CS, #RD, CLK
 // 12..15: OE0-2, DIR0
-#define PIN_BASE 2
+#define PIN_BASE 0
 
 #define CARTRIDGE_PIO pio0
 #define CARTRIDGE_SM_ADDR 0
@@ -174,6 +174,7 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
   pio_sm_set_consecutive_pindirs(pio, temp_sm, pins, CARTRIDGE_BITS, false);
   pio_sm_set_consecutive_pindirs(pio, temp_sm, control_pins, CONTROL_BITS,
                                  true);
+  pio_sm_set_pins(pio, temp_sm, ADDR_HI << control_pins);
   for (int i = 0; i < CARTRIDGE_BITS; i++) {
     pio_gpio_init(pio, pins + i);
   }
