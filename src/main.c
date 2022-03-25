@@ -226,7 +226,7 @@ __no_inline_not_in_flash_func(RunAddressDecoder)() {
     uint32_t signals = pio_sm_get_blocking(CARTRIDGE_PIO, CARTRIDGE_SM_ADDR);
 
     uint32_t action = signals >> 16;
-    uint32_t addr = signals & 0x7FFF;
+    uint32_t addr = signals & 0xFFFF;
     if (action == RAM_READ && addr & 0xA000) {
       // A15 and A13 as secondary high CS.
       // Only update the data portion (lowest byte) of the command.
