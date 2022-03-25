@@ -23,20 +23,21 @@
 .wrap
 
 .program muxed_pindirs
-start:
     jmp pin set_input
 set_output:
     mov osr, ~null
-    out pindirs, 8
-    jmp start
+    jmp out_pindirs
 set_input:
     mov osr, null
+out_pindirs:
     out pindirs, 8
 
 .program muxed_pins
     mov x, ~null ; init with 0xFFFFFFFF
+.wrap_target
 loop:
     pull noblock ; equavilent to `mov osr, x` when no new data available
     mov x, osr   ; store fifo entry for next cycle
     jmp pin loop ; do not update the  output if output enable is high
     out pins, 8
+.wrap
