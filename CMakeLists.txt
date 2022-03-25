@@ -8,23 +8,24 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
-add_executable(gb-cartridge)
-
-pico_generate_pio_header(gb-cartridge ${CMAKE_CURRENT_LIST_DIR}/src/cartridge_interface.pio)
-pico_generate_pio_header(gb-cartridge ${CMAKE_CURRENT_LIST_DIR}/src/simulation.pio)
-
-target_sources(gb-cartridge PRIVATE
-    src/main.c
-)
-
-target_include_directories(gb-cartridge PRIVATE src)
-
-target_link_libraries(gb-cartridge
+add_executable(cartridge)
+pico_generate_pio_header(cartridge ${CMAKE_CURRENT_LIST_DIR}/src/cartridge_interface.pio)
+target_sources(cartridge PRIVATE src/main.c)
+target_link_libraries(cartridge
     hardware_clocks
     hardware_dma
     hardware_pio
     hardware_pll
     pico_stdlib
 )
+pico_add_extra_outputs(cartridge)
 
-pico_add_extra_outputs(gb-cartridge)
+add_executable(simulator)
+pico_generate_pio_header(simulator ${CMAKE_CURRENT_LIST_DIR}/src/simulation.pio)
+target_sources(simulator PRIVATE src/simulator.c)
+target_link_libraries(simulator
+    hardware_pio
+    pico_stdlib
+)
+pico_set_binary_type(simulator no_flash)
+pico_add_extra_outputs(simulator)

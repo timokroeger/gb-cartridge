@@ -2,19 +2,13 @@
 
 #include <assert.h>
 #include <stdint.h>
-#include <stdio.h>
 
 #include "cartridge_interface.pio.h"
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
 #include "hardware/pll.h"
-#include "hardware/structs/ssi.h"
-#include "hardware/sync.h"
 #include "pico/stdlib.h"
-#include "simulation.pio.h"
-
-#define UNDERCLOCK_RATIO 125
 
 #define ROM_SIZE (32 * 1024)
 #define RAM_SIZE (8 * 1024)
@@ -217,24 +211,12 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
   InitDma(pio_get_dreq(pio, CARTRIDGE_SM_ADDR, false),
           &pio->rxf[CARTRIDGE_SM_ADDR], &pio->txf[CARTRIDGE_SM_DATA]);
 
-  // TODO: remove
-  // Run at 1MHz for easy cycle counting with a logic analyzer.
-  pio_sm_set_clkdiv_int_frac(pio, CARTRIDGE_SM_ADDR, UNDERCLOCK_RATIO, 0);
-  pio_sm_set_clkdiv_int_frac(pio, CARTRIDGE_SM_DATA, UNDERCLOCK_RATIO, 0);
-
   pio_set_sm_mask_enabled(
       pio, (1 << CARTRIDGE_SM_ADDR) | (1 << CARTRIDGE_SM_DATA), true);
 }
 
 static void __attribute__((optimize("O3")))
-__no_inline_not_in_flash_func(RunAddressDecoder)(const Simulation *sim) {
-  // Underclock flash interface so that cycles match our slowed down simulation.
-  ssi_hw->ssienr = 0;
-  ssi_hw->baudr = 2 * 125;
-  ssi_hw->ssienr = 1;
-
-  SimulationStart(sim);
-
+__no_inline_not_in_flash_func(RunAddressDecoder)() {
   while (true) {
     // Wait until`read_addr` SM is ready to give us the address.
     while (!pio_interrupt_get(CARTRIDGE_PIO, 0))
@@ -269,18 +251,25 @@ __no_inline_not_in_flash_func(RunAddressDecoder)(const Simulation *sim) {
 }
 
 int main() {
+  // TODO: remove
+  // Run system clock at 1MHz for easy cycle counting with a logic analyzer.
+  clock_configure(clk_ref, CLOCKS_CLK_REF_CTRL_SRC_VALUE_XOSC_CLKSRC, 0,
+                  XOSC_MHZ * MHZ, XOSC_MHZ * MHZ);
+  clock_configure(clk_sys, CLOCKS_CLK_SYS_CTRL_SRC_VALUE_CLK_REF, 0,
+                  XOSC_MHZ * MHZ, 1 * MHZ);
+  clock_configure(clk_peri, 0, CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_USB,
+                  48 * MHZ, 48 * MHZ);
+  pll_deinit(pll_sys);
+
   gpio_init(PICO_DEFAULT_LED_PIN);
   gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
   gpio_put(PICO_DEFAULT_LED_PIN, 1);
 
   InitCartridgeInterface(CARTRIDGE_PIO, PIN_BASE);
 
-  Simulation sim;
-  SimulationInit(&sim, pio1, 19, 15);
-
   // Make sure that no cade runs from flash memory anymore to guarantee for
   // constant flash access times.
-  RunAddressDecoder(&sim);
+  RunAddressDecoder();
 
   return 0;
 }
