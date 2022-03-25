@@ -7,7 +7,6 @@
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
-#include "hardware/pll.h"
 #include "pico/stdlib.h"
 
 #define ROM_SIZE (32 * 1024)
@@ -257,9 +256,6 @@ int main() {
                   XOSC_MHZ * MHZ, XOSC_MHZ * MHZ);
   clock_configure(clk_sys, CLOCKS_CLK_SYS_CTRL_SRC_VALUE_CLK_REF, 0,
                   XOSC_MHZ * MHZ, 1 * MHZ);
-  clock_configure(clk_peri, 0, CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_USB,
-                  48 * MHZ, 48 * MHZ);
-  pll_deinit(pll_sys);
 
   gpio_init(PICO_DEFAULT_LED_PIN);
   gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
