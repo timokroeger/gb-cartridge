@@ -133,8 +133,6 @@ static void SimulationWrite(const Simulation *sim, uint16_t addr,
   pio_sm_put(sim->pio_mux, sim->sm_data, data);
 }
 
-static int SimulationCmd(const Simulation *sim, uint8_t cmd[4]) {}
-
 int main() {
   stdio_init_all();
 
@@ -151,20 +149,22 @@ int main() {
   while (true) {
     gpio_put(PICO_DEFAULT_LED_PIN, stdio_usb_connected());
 
-    int c = getchar_timeout_us(1000);
+    int c = getchar_timeout_us(10000);
     if (c < 0) {
       continue;
     }
 
-    if (c != 0 || rx_buf_idx == sizeof(rx_buf)) {
-      rx_buf[rx_buf_idx++];
+    if (c != 0) {
+      if (rx_buf_idx < sizeof(rx_buf)) {
+        rx_buf[rx_buf_idx++] = c;
+      }
       continue;
     }
 
     uint8_t cmd[4];
     cobs_decode_result dr = cobs_decode(cmd, sizeof(cmd), rx_buf, rx_buf_idx);
     rx_buf_idx = 0;
-    if (dr.status != COBS_DECODE_OK) {
+    if (dr.status != COBS_DECODE_OK || dr.out_len != 4) {
       continue;
     }
 
