@@ -34,7 +34,7 @@ typedef struct {
 
 static void SimulationInit(Simulation *sim, PIO pio_clk, uint pins_clk,
                            PIO pio_mux, uint pins_mux, uint dir_data,
-                           uint oe_addr_hi, uint oe_addr_lo, uint oe_data) {
+                           uint oe_addr_lo, uint oe_addr_hi, uint oe_data) {
   assert(sim);
 
   pio_gpio_init(pio_clk, pins_clk);
