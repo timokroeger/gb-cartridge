@@ -1,13 +1,19 @@
 // Copyright 2022 Timo Kröger <timokroeger93@gmail.com>
 
+#define PICO_STDIO_ENABLE_CRLF_SUPPORT 0
+
+#include <stdio.h>
+
+#include "cobs.h"
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
 #include "hardware/sync.h"
+#include "pico/stdio.h"
 #include "pico/stdlib.h"
 #include "simulation.pio.h"
 
 #define TARGET_CLK_HZ (1048576u / 125)
-#define CLK_SM_DIV 125000000u / (TARGET_CLK_HZ * 8 * 2)
+#define CLK_SM_DIV 125000000u / (TARGET_CLK_HZ * 12 * 2)
 
 // output of 8 patters 4bit each
 #define SIM_IDLE 0b11011101110111011100110011001100u
@@ -55,7 +61,7 @@ static void SimulationInit(Simulation *sim, PIO pio_clk, uint pins_clk,
   sm_config_set_out_pins(&c, pins_clk, 4);
   sm_config_set_out_shift(&c, false, false, 32);
   sm_config_set_in_pins(&c, pins_mux);
-  sm_config_set_in_shift(&c, false, true, 8);
+  sm_config_set_in_shift(&c, false, false, 32);
   sm_config_set_clkdiv_int_frac(&c, CLK_SM_DIV, 0);
   pio_sm_init(pio_clk, sm_clk, offset, &c);
   pio_sm_put(pio_clk, sm_clk, SIM_IDLE);
@@ -102,31 +108,79 @@ static void SimulationInit(Simulation *sim, PIO pio_clk, uint pins_clk,
 }
 
 static uint8_t SimulationRead(const Simulation *sim, uint16_t addr) {
-  pio_sm_put(sim->pio_clk, sim->sm_clk,
-             (addr & 0x8000) ? SIM_RAM_RD : SIM_ROM_RD);
+  pio_sm_put_blocking(sim->pio_clk, sim->sm_clk,
+                      (addr & 0x8000) ? SIM_RAM_RD : SIM_ROM_RD);
   pio_sm_put(sim->pio_mux, sim->sm_addr_hi, addr >> 8);
   pio_sm_put(sim->pio_mux, sim->sm_addr_lo, addr);
   pio_sm_put(sim->pio_mux, sim->sm_data, 0xFFFFFFFF);
+
+  // Wait until the cycle has started.
+  while (pio_sm_get_tx_fifo_level(sim->pio_clk, sim->sm_clk) != 0)
+    ;
+
+  // Throw away input from previous writes.
+  pio_sm_clear_fifos(sim->pio_clk, sim->sm_clk);
+
   return pio_sm_get_blocking(sim->pio_clk, sim->sm_clk);
 }
 
 static void SimulationWrite(const Simulation *sim, uint16_t addr,
                             uint8_t data) {
-  pio_sm_put(sim->pio_clk, sim->sm_clk,
-             (addr & 0x8000) ? SIM_RAM_WR : SIM_MBC_WR);
+  pio_sm_put_blocking(sim->pio_clk, sim->sm_clk,
+                      (addr & 0x8000) ? SIM_RAM_WR : SIM_MBC_WR);
   pio_sm_put(sim->pio_mux, sim->sm_addr_hi, addr >> 8);
   pio_sm_put(sim->pio_mux, sim->sm_addr_lo, addr);
   pio_sm_put(sim->pio_mux, sim->sm_data, data);
-  pio_sm_get_blocking(sim->pio_clk, sim->sm_clk);
 }
 
+static int SimulationCmd(const Simulation *sim, uint8_t cmd[4]) {}
+
 int main() {
+  stdio_init_all();
+
   Simulation sim;
   SimulationInit(&sim, pio0, 8, pio1, 0, 15, 14, 13, 12);
 
+  uint8_t rx_buf[8];
+  size_t rx_buf_idx = 0;
+
+  gpio_init(PICO_DEFAULT_LED_PIN);
+  gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+  gpio_put(PICO_DEFAULT_LED_PIN, 1);
+
   while (true) {
-    SimulationRead(&sim, 0x5555);
-    SimulationWrite(&sim, 0xAAAA, 0x33);
+    gpio_put(PICO_DEFAULT_LED_PIN, stdio_usb_connected());
+
+    int c = getchar_timeout_us(1000);
+    if (c < 0) {
+      continue;
+    }
+
+    if (c != 0 || rx_buf_idx == sizeof(rx_buf)) {
+      rx_buf[rx_buf_idx++];
+      continue;
+    }
+
+    uint8_t cmd[4];
+    cobs_decode_result dr = cobs_decode(cmd, sizeof(cmd), rx_buf, rx_buf_idx);
+    rx_buf_idx = 0;
+    if (dr.status != COBS_DECODE_OK) {
+      continue;
+    }
+
+    uint16_t addr = cmd[0] | cmd[1] << 8;
+    if (cmd[3] == 0) {
+      uint8_t data = SimulationRead(&sim, addr);
+      uint8_t tx_buf[2];
+      cobs_encode_result er = cobs_encode(tx_buf, sizeof(tx_buf), &data, 1);
+      for (size_t i = 0; i < er.out_len; i++) {
+        putchar(tx_buf[i]);
+      }
+      putchar_raw(0);  // frame marker
+    } else {
+      uint8_t data = cmd[2];
+      SimulationWrite(&sim, addr, data);
+    }
   }
 
   return 0;

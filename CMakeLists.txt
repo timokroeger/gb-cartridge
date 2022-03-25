@@ -15,17 +15,26 @@ target_link_libraries(cartridge
     hardware_clocks
     hardware_dma
     hardware_pio
-    hardware_pll
     pico_stdlib
 )
 pico_add_extra_outputs(cartridge)
 
 add_executable(simulator)
 pico_generate_pio_header(simulator ${CMAKE_CURRENT_LIST_DIR}/src/simulation.pio)
-target_sources(simulator PRIVATE src/simulator.c)
+target_sources(simulator PRIVATE
+    src/simulator.c
+    lib/cobs-c/cobs.c
+)
+target_include_directories(simulator PRIVATE lib/cobs-c)
 target_link_libraries(simulator
     hardware_pio
     pico_stdlib
+)
+pico_enable_stdio_usb(simulator 1)
+pico_enable_stdio_uart(simulator 0)
+target_compile_definitions(simulator PRIVATE
+#    PICO_STDIO_ENABLE_CRLF_SUPPORT=0
+#    PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=10000
 )
 pico_set_binary_type(simulator no_flash)
 pico_add_extra_outputs(simulator)

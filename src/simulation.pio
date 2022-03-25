@@ -10,15 +10,16 @@
     mov x, osr
 .wrap_target
     pull noblock
-    out pins, 4 [1]
-    out pins, 4 [1]
-    out pins, 4 [1]
-    out pins, 4 [1]
-    out pins, 4 [1]
-    out pins, 4 [1]
+    out pins, 4 [2]
+    out pins, 4 [2]
+    out pins, 4 [2]
+    out pins, 4 [2]
+    out pins, 4 [2]
+    out pins, 4 [2]
     out pins, 4
-    in pins, 8 ; autopush
-    out pins, 4
+    in pins, 8
+    push noblock
+    out pins, 4 [1]
 .wrap
 
 .program muxed_pindirs
