@@ -77,7 +77,7 @@
 
     ; Initialize X with the release data lines command.
     pull
-    out x, 16
+    mov x, osr
 
 .wrap_target
 
