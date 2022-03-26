@@ -9,8 +9,10 @@
     pull ; IDLE pattern as default
     mov x, osr
 .wrap_target
+    irq 0
     pull noblock
-    out pins, 4 [2]
+    out pins, 4
+    irq clear 0 [1]
     out pins, 4 [2]
     out pins, 4 [2]
     out pins, 4 [2]
@@ -19,7 +21,7 @@
     out pins, 4
     in pins, 8
     push noblock
-    out pins, 4 [1]
+    out pins, 4
 .wrap
 
 .program muxed_pindirs

@@ -107,12 +107,15 @@ static void SimulationInit(Simulation *sim, PIO pio_clk, uint pins_clk,
   sim->sm_data = sm_data;
 }
 
-static uint8_t SimulationRead(const Simulation *sim, uint16_t addr) {
-  pio_sm_put_blocking(sim->pio_clk, sim->sm_clk,
-                      (addr & 0x8000) ? SIM_RAM_RD : SIM_ROM_RD);
+static uint8_t SimulationCmd(const Simulation *sim, uint16_t addr,
+                             uint8_t data_out, uint32_t cmd) {
+  while (!pio_interrupt_get(sim->pio_clk, 0))
+    ;
+
+  pio_sm_put(sim->pio_clk, sim->sm_clk, cmd);
   pio_sm_put(sim->pio_mux, sim->sm_addr_hi, addr >> 8);
   pio_sm_put(sim->pio_mux, sim->sm_addr_lo, addr);
-  pio_sm_put(sim->pio_mux, sim->sm_data, 0xFFFFFFFF);
+  pio_sm_put(sim->pio_mux, sim->sm_data, data_out);
 
   // Wait until the cycle has started.
   while (pio_sm_get_tx_fifo_level(sim->pio_clk, sim->sm_clk) != 0)
@@ -121,22 +124,22 @@ static uint8_t SimulationRead(const Simulation *sim, uint16_t addr) {
   // Throw away input from previous writes.
   pio_sm_clear_fifos(sim->pio_clk, sim->sm_clk);
 
-  uint8_t data = pio_sm_get_blocking(sim->pio_clk, sim->sm_clk);
-
+  uint8_t data_in = pio_sm_get_blocking(sim->pio_clk, sim->sm_clk);
   pio_sm_put(sim->pio_mux, sim->sm_addr_hi, 0xFFFFFFFF);
   pio_sm_put(sim->pio_mux, sim->sm_addr_lo, 0xFFFFFFFF);
   pio_sm_put(sim->pio_mux, sim->sm_data, 0xFFFFFFFF);
 
-  return data;
+  return data_in;
+}
+
+static uint8_t SimulationRead(const Simulation *sim, uint16_t addr) {
+  return SimulationCmd(sim, addr, 0xFF,
+                       (addr & 0x8000) ? SIM_RAM_RD : SIM_ROM_RD);
 }
 
 static void SimulationWrite(const Simulation *sim, uint16_t addr,
                             uint8_t data) {
-  pio_sm_put_blocking(sim->pio_clk, sim->sm_clk,
-                      (addr & 0x8000) ? SIM_RAM_WR : SIM_MBC_WR);
-  pio_sm_put(sim->pio_mux, sim->sm_addr_hi, addr >> 8);
-  pio_sm_put(sim->pio_mux, sim->sm_addr_lo, addr);
-  pio_sm_put(sim->pio_mux, sim->sm_data, data);
+  SimulationCmd(sim, addr, data, (addr & 0x8000) ? SIM_RAM_WR : SIM_MBC_WR);
 }
 
 int main() {
