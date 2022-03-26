@@ -1,4 +1,4 @@
-// TODO: License Header
+// Copyright 2022 Timo Kröger <timokroeger93@gmail.com>
 
 #include <assert.h>
 #include <stdint.h>

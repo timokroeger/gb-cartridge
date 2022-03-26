@@ -1,4 +1,4 @@
-; TODO: License
+; Copyright 2022 Timo Kröger <timokroeger93@gmail.com>
 
 ; The gameboy cartridge data and address signals are multiplexed with
 ; switchable transceivers.
@@ -57,18 +57,18 @@
     wait 1 pin CLK [14]     ; the delay starts after the pin is high   cycle  0
 
     ; Read the address but ignore A15, ADDR_HI is selected already.
-    in pins, 7              ; A14-A8                                   cycle 15
-    set pins, ADDR_LO ;                                                cycle 16
-    in pins, 8              ; A7-A0, autopush                          cycle 17
+    in pins, 7              ; A14-A8                                   cycle 16
+    set pins, ADDR_LO [1]   ;                                          cycle 17
+    in pins, 8              ; A7-A0, autopush                          cycle 19
     ; DMA flash access now runs in parallel
 
-    irq 0                   ; notify address decoder to poll for data  cycle 18
+    irq 0                   ; notify address decoder to poll for data  cycle 20
 
     ; The Gameboy updates the A15 or and #CS lines on the second rising GB
     ; clock edge. Wait until cycle 30 to sample those.
-    set pins, ADDR_HI [10]  ;                                          cycle 19
+    set pins, ADDR_HI [8]   ;                                          cycle 21
     in pins, 10             ; #RD, #CS, A15..A8                        cycle 30
-    set pins, ADDR_LO       ;                                          cycle 31
+    set pins, ADDR_LO [1]   ;                                          cycle 31
     in pins, 8              ; A7-A0, autopush                          cycle 32
 
 ;------------------------------------------------------------------------------;
@@ -84,22 +84,21 @@
     ; Data must be available at the third rising edge of GB clock which
     ; translates to a cycle count of 89.
     ; The loop of `read_addr` RX FIFO -> DMA chain -> `data_out_in` TX FIFO
-    ; takes 62 cycles.
+    ; takes 63 cycles.
 
     ; Write output data (or not when selecting DATA_IN).
-    pull                    ;                                 cycle 17 + 62 = 79
-    out pins, 16            ;                                           cycle 80
-    out pindirs, 16         ;                                           cycle 81
-    ; Deadline is met with 8 cycles spare.
-    ; TODO: Adjust ADDR_SAMPLE_DELAY to improve stablity.
+    pull                    ;                                cycle 19 + 63 = 82
+    out pins, 16            ;                                          cycle 83
+    out pindirs, 16 [1]     ;                                          cycle 84
+    ; Deadline is met with 4 cycles spare.
 
-    ; Read data. It will discarded later for DATA_OUT.
-    in pins, 8
+    ; Read data. It will be discarded later for DATA_OUT.
+    in pins, 8              ;                                          cycle 86
 
     ; Release the data lines at the end of the cycle.
     mov osr, x
-    wait 1 pin CLK
-    out pindirs, 16
-    out pins, 16
+    wait 1 pin CLK          ;                                          cycle  1
+    out pindirs, 16         ;                                          cycle  2
+    out pins, 16            ;                                          cycle  3
 
 .wrap
