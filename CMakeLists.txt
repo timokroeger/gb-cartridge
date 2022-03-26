@@ -10,7 +10,10 @@ pico_sdk_init()
 
 add_executable(cartridge)
 pico_generate_pio_header(cartridge ${CMAKE_CURRENT_LIST_DIR}/src/cartridge_interface.pio)
-target_sources(cartridge PRIVATE src/main.c)
+target_sources(cartridge PRIVATE
+    src/main.c
+    src/rom.c
+)
 target_link_libraries(cartridge
     hardware_clocks
     hardware_dma
