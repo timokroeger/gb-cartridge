@@ -121,7 +121,13 @@ static uint8_t SimulationRead(const Simulation *sim, uint16_t addr) {
   // Throw away input from previous writes.
   pio_sm_clear_fifos(sim->pio_clk, sim->sm_clk);
 
-  return pio_sm_get_blocking(sim->pio_clk, sim->sm_clk);
+  uint8_t data = pio_sm_get_blocking(sim->pio_clk, sim->sm_clk);
+
+  pio_sm_put(sim->pio_mux, sim->sm_addr_hi, 0xFFFFFFFF);
+  pio_sm_put(sim->pio_mux, sim->sm_addr_lo, 0xFFFFFFFF);
+  pio_sm_put(sim->pio_mux, sim->sm_data, 0xFFFFFFFF);
+
+  return data;
 }
 
 static void SimulationWrite(const Simulation *sim, uint16_t addr,
