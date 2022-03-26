@@ -42,11 +42,6 @@
 
 static uint8_t g_ram[RAM_SIZE];
 
-// DMA writes actual data to the first byte before we send a command to the SM.
-static volatile uint32_t g_cmd_rom_out = DATA_CMD_OUT;
-static volatile uint32_t g_cmd_ram_out = DATA_CMD_OUT;
-static volatile uint32_t g_cmd_in = DATA_CMD_IN;
-
 static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
                     volatile void *data_fifo) {
   dma_claim_mask((1 << DMA_CH_ADDR_OFFSET) | (1 << DMA_CH_FLASH_TO_RAM) |
@@ -62,8 +57,8 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_write_increment(&c, false);
   channel_config_set_dreq(&c, addr_dreq);
   // Chaining cannot be used here because it starts the next DMA before its
-  // the read register received the update. Use the trigger feature instead
-  // to start step 2 with the write to the read register.
+  // read register received the update. Use the trigger feature instead to
+  // start step 2 with the write to the read register.
   dma_channel_configure(
       DMA_CH_ADDR_OFFSET, &c,
       hw_set_alias(&dma_hw->ch[DMA_CH_FLASH_TO_RAM].al3_read_addr_trig),
@@ -72,23 +67,23 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
   // Step 2: Copy from ROM to temporary memory location.
   //         This takes ~50 cycles because it accesses flash and makes it the
   //         slowest operation of a bus access cycle.
+  static volatile uint32_t data_cmd_rom_out = DATA_CMD_OUT;
   c = dma_channel_get_default_config(DMA_CH_FLASH_TO_RAM);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
   channel_config_set_chain_to(&c, DMA_CH_DATA_CMD);
-  dma_channel_configure(DMA_CH_FLASH_TO_RAM, &c, &g_cmd_rom_out,
+  dma_channel_configure(DMA_CH_FLASH_TO_RAM, &c, &data_cmd_rom_out,
                         NULL,  // Reset to beginning of current ROM bank by the
                                // CPU and updated by DMA Step 1.
                         1, false);
 
-  // Step 3: Transfer the selected command to the `data_out_in` SM.
+  // Step 3: Transfer the command including rom data to the `data_out_in` SM.
   c = dma_channel_get_default_config(DMA_CH_DATA_CMD);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
-  dma_channel_configure(DMA_CH_DATA_CMD, &c, data_fifo,
-                        NULL,  // Updated by address decoder.
-                        1, false);
+  dma_channel_configure(DMA_CH_DATA_CMD, &c, data_fifo, &data_cmd_rom_out, 1,
+                        false);
 }
 
 static void InitCartridgeInterface(PIO pio, uint pins) {
@@ -150,10 +145,12 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
 static void __attribute__((optimize("O3")))
 __no_inline_not_in_flash_func(RunAddressDecoder)() {
   while (true) {
-    // Reset `DMA_CH_FLASH_TO_RAM` read register to the start of the current ROM
-    // memory bank and trigger the DMA chain to read from flash in background as
-    // soon as a new address is available on the bus.
+    // Reset the flash to ram DMA chanel read register to the start of the
+    // current ROM memory bank and trigger the DMA chain to read from flash in
+    // background as soon as a new address is available on the bus.
     dma_channel_set_read_addr(DMA_CH_FLASH_TO_RAM, &g_rom, true);
+
+    // TODO: wfi
 
     // Wait until`read_addr` SM is ready to give us the address.
     // We use the IRQ as additional barrier so we do not accidentally "steal"
@@ -166,25 +163,31 @@ __no_inline_not_in_flash_func(RunAddressDecoder)() {
 
     uint32_t action = signals >> 16;
     uint32_t addr = signals & 0xFFFF;
-    if (action == RAM_READ && addr & 0x2000) {  // A13 as secondary high CS.
-      // Only update the data portion (lowest byte) of the command.
-      *(volatile uint8_t *)&g_cmd_ram_out = g_ram[addr & 0x0FFF];
-      dma_channel_set_read_addr(DMA_CH_DATA_CMD, &g_cmd_ram_out, false);
-    } else if (action == ROM_READ && addr < 0x8000) {  // A15 as chip select
-      // DMA handles the update of the data in the command.
-      dma_channel_set_read_addr(DMA_CH_DATA_CMD, &g_cmd_rom_out, false);
-    } else {
-      // Idle or Write
-      dma_channel_set_read_addr(DMA_CH_DATA_CMD, &g_cmd_in, false);
-    }
 
-    uint8_t data = pio_sm_get_blocking(CARTRIDGE_PIO, CARTRIDGE_SM_DATA);
-    if (action == RAM_WRITE && addr & 0x2000) {  // A13 as secondary high CS.
-      g_ram[addr & 0x0FFF] = data;
-    } else if (action == MBC_WRITE &&
-               // A15 as primary and A14 as secondary high CS.
-               addr < 0x8000 && addr & 0x4000) {
-      // TODO
+    if (action == ROM_READ && addr < 0x8000) {  // A15 as chip select
+      // No manual action required, all handled by DMA.
+    } else {
+      // Abort the DMA chain. Only the flash to ram channel should be active
+      // but abort them all just to be sure.
+      dma_hw->abort = (1 << DMA_CH_ADDR_OFFSET) | (1 << DMA_CH_FLASH_TO_RAM) |
+                      (1 << DMA_CH_DATA_CMD);
+
+      if (action == RAM_READ && addr & 0x2000) {  // A13 as secondary high CS.
+        pio_sm_put(CARTRIDGE_PIO, CARTRIDGE_SM_DATA,
+                   DATA_CMD_OUT | g_ram[addr & 0x0FFF]);
+      } else {
+        // Idle or Write
+        pio_sm_put(CARTRIDGE_PIO, CARTRIDGE_SM_DATA, DATA_CMD_IN);
+      }
+
+      uint8_t data = pio_sm_get_blocking(CARTRIDGE_PIO, CARTRIDGE_SM_DATA);
+      if (action == RAM_WRITE && addr & 0x2000) {  // A13 as secondary high CS.
+        g_ram[addr & 0x0FFF] = data;
+      } else if (action == MBC_WRITE &&
+                 // A15 as primary and A14 as secondary high CS.
+                 addr < 0x8000 && addr & 0x4000) {
+        // TODO
+      }
     }
   }
 }
