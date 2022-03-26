@@ -37,6 +37,10 @@
 .define public RAM_READ  0b00
 .define public RAM_WRITE 0b10
 
+.define public IRQ_ADDR 0
+.define public IRQ_DATA_OUT 1
+.define public IRQ_DATA_IN 2
+
 ;------------------------------------------------------------------------------;
 
 .program read_addr
@@ -54,15 +58,16 @@
     ; one cycle additional delay (just to keep in mind for later).
     ; Reference: https://forums.raspberrypi.com/viewtopic.php?t=321852#p1926757
     wait 0 pin CLK
-    wait 1 pin CLK [14]     ; the delay starts after the pin is high   cycle  0
+    wait 1 pin CLK [12]     ; the delay starts after the pin is high   cycle  0
 
-    ; Read the address but ignore A15, ADDR_HI is selected already.
+    ; Read the address but ignore A15
+    set pins, ADDR_HI [1]   ;                                          cycle 14
     in pins, 7              ; A14-A8                                   cycle 16
     set pins, ADDR_LO [1]   ;                                          cycle 17
     in pins, 8              ; A7-A0, autopush                          cycle 19
     ; DMA flash access now runs in parallel
 
-    irq 0                   ; notify address decoder to poll for data  cycle 20
+    irq IRQ_ADDR            ; notify address decoder to poll for data  cycle 20
 
     ; The Gameboy updates the A15 or and #CS lines on the second rising GB
     ; clock edge. Wait until cycle 30 to sample those.
@@ -73,32 +78,39 @@
 
 ;------------------------------------------------------------------------------;
 
-.program data_out_in
+.program data_out
 
-    ; Initialize X with the release data lines command.
-    pull
-    mov x, osr
-
-.wrap_target
+    ; Wait for the address decoder to decide if we can write to the bus.
+    mov osr, ~null          ; Prepare OSR with all ones.
+    wait 1 irq IRQ_DATA_OUT
+    set pins, DATA_OUT      ; Switch transsceiver direction first.
+    out pindirs, 8          ; Then update the direction of our pins.
 
     ; Data must be available at the third rising edge of GB clock which
-    ; translates to a cycle count of 89.
-    ; The loop of `read_addr` RX FIFO -> DMA chain -> `data_out_in` TX FIFO
-    ; takes 63 cycles.
+    ; translates to a cycle count of 89. For flash access the loop of
+    ; `read_addr` RX FIFO -> DMA chain -> `data_out` TX FIFO takes 63
+    ; cycles.
 
     ; Write output data (or not when selecting DATA_IN).
-    pull                    ;                                cycle 19 + 63 = 82
-    out pins, 16            ;                                          cycle 83
-    out pindirs, 16 [1]     ;                                          cycle 84
-    ; Deadline is met with 4 cycles spare.
-
-    ; Read data. It will be discarded later for DATA_OUT.
-    in pins, 8              ;                                          cycle 86
+    pull                    ;                                cycle 19 + 59 = 78
+    out pins, 8             ;                                          cycle 79
+    ; Deadline is met with 10 cycles spare.
 
     ; Release the data lines at the end of the cycle.
-    mov osr, x
-    wait 1 pin CLK          ;                                          cycle  1
-    out pindirs, 16         ;                                          cycle  2
-    out pins, 16            ;                                          cycle  3
+    mov osr, null
+    wait 1 pin CLK          ;                                          cycle  0
+    out pindirs, 8          ;                                          cycle  2
+    set pins, DATA_IN       ;                                          cycle  3
 
-.wrap
+.program data_in
+
+    ; Wait for the address decoder to decide if we need to sample the bus data.
+    wait 1 irq IRQ_DATA_IN
+
+    ; The GB updates the data on the falling edge. Wait for CLK to be low so
+    ; that we sample valid data in case the address decoder was faster than
+    ; half a bus clock cycle.
+    wait 0 pin CLK          ; #WR works too
+    
+    set pins, DATA_IN [1]
+    in pins, 8              ; autopush

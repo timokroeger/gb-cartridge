@@ -8,6 +8,8 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
+add_compile_options(-Wall -Wextra)
+
 add_executable(cartridge)
 pico_generate_pio_header(cartridge ${CMAKE_CURRENT_LIST_DIR}/src/cartridge_interface.pio)
 target_sources(cartridge PRIVATE

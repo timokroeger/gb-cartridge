@@ -18,40 +18,26 @@
 // 12..15: OE0-2, DIR0
 #define PIN_BASE 0
 
-#define CARTRIDGE_PIO pio0
-#define CARTRIDGE_SM_ADDR 0
-#define CARTRIDGE_SM_DATA 1
+#define PIO_CARTRIDGE pio0
+#define SM_ADDR 0
+#define SM_DATA_OUT 1
+#define SM_DATA_IN 2
 
 #define DMA_CH_ADDR_OFFSET 0
-#define DMA_CH_FLASH_TO_RAM 1
+#define DMA_CH_FLASH 1
 #define DMA_CH_DATA_CMD 2
-
-// pindir in upper word
-// pin data in lower word
-#define DATA_CMD_OUT                                            \
-  ((((uint32_t)CONTROL_MASK << CARTRIDGE_BITS) | 0xFF) << 16) | \
-      (DATA_OUT << CARTRIDGE_BITS)
-#define DATA_CMD_IN                                    \
-  (((uint32_t)CONTROL_MASK << CARTRIDGE_BITS) << 16) | \
-      (DATA_IN << CARTRIDGE_BITS)
-
-// pin in upper word
-// pindir data in lower word
-#define DATA_CMD_RELEASE \
-  ((ADDR_HI << CARTRIDGE_BITS) << 16) | (CONTROL_MASK << CARTRIDGE_BITS)
 
 static uint8_t g_ram[RAM_SIZE];
 
 static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
                     volatile void *data_fifo) {
-  dma_claim_mask((1 << DMA_CH_ADDR_OFFSET) | (1 << DMA_CH_FLASH_TO_RAM) |
-                 (1 << DMA_CH_DATA_CMD));
   dma_channel_config c;
 
   // Step 1: Get the ROM address from the `read_addr` SM and use it as offset
   //         into the current ROM bank. Directly write the offset to the read
-  //         register of the `DMA_CH_FLASH_TO_RAM` dma channel. Use the atomic
+  //         register of the `DMA_CH_FLASH` dma channel. Use the atomic
   //         set alias memory address to add the offset without overwriting.
+  dma_channel_claim(DMA_CH_ADDR_OFFSET);
   c = dma_channel_get_default_config(DMA_CH_ADDR_OFFSET);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
@@ -61,29 +47,21 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
   // start step 2 with the write to the read register.
   dma_channel_configure(
       DMA_CH_ADDR_OFFSET, &c,
-      hw_set_alias(&dma_hw->ch[DMA_CH_FLASH_TO_RAM].al3_read_addr_trig),
-      addr_fifo, 1, false);
+      hw_set_alias(&dma_hw->ch[DMA_CH_FLASH].al3_read_addr_trig), addr_fifo, 1,
+      false);
 
-  // Step 2: Copy from ROM to temporary memory location.
+  // Step 2: Copy from flash to temporary memory location.
   //         This takes ~50 cycles because it accesses flash and makes it the
   //         slowest operation of a bus access cycle.
-  static volatile uint32_t data_cmd_rom_out = DATA_CMD_OUT;
-  c = dma_channel_get_default_config(DMA_CH_FLASH_TO_RAM);
+  dma_channel_claim(DMA_CH_FLASH);
+  c = dma_channel_get_default_config(DMA_CH_FLASH);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
-  channel_config_set_chain_to(&c, DMA_CH_DATA_CMD);
-  dma_channel_configure(DMA_CH_FLASH_TO_RAM, &c, &data_cmd_rom_out,
+  dma_channel_configure(DMA_CH_FLASH, &c, data_fifo,
                         NULL,  // Reset to beginning of current ROM bank by the
                                // CPU and updated by DMA Step 1.
                         1, false);
-
-  // Step 3: Transfer the command including rom data to the `data_out_in` SM.
-  c = dma_channel_get_default_config(DMA_CH_DATA_CMD);
-  channel_config_set_read_increment(&c, false);
-  channel_config_set_write_increment(&c, false);
-  dma_channel_configure(DMA_CH_DATA_CMD, &c, data_fifo, &data_cmd_rom_out, 1,
-                        false);
 }
 
 static void InitCartridgeInterface(PIO pio, uint pins) {
@@ -112,34 +90,41 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
   pio->input_sync_bypass |= (0x0FFF << pins);
 
   // Configure the `read_addr` state machine
-  pio_sm_claim(pio, CARTRIDGE_SM_ADDR);
+  pio_sm_claim(pio, SM_ADDR);
   offset = pio_add_program(pio, &read_addr_program);
   c = read_addr_program_get_default_config(offset);
-  sm_config_set_in_pins(&c, pins);
   sm_config_set_set_pins(&c, control_pins, CONTROL_BITS);
+  sm_config_set_in_pins(&c, pins);
   sm_config_set_in_shift(&c, false,  // shift_direction=left
                          true, 15);  // autopush enabled
-  pio_sm_init(pio, CARTRIDGE_SM_ADDR, offset, &c);
+  pio_sm_init(pio, SM_ADDR, offset, &c);
 
-  // Configure the `data_out_in` state machine
-  pio_sm_claim(pio, CARTRIDGE_SM_DATA);
-  offset = pio_add_program(pio, &data_out_in_program);
-  c = data_out_in_program_get_default_config(offset);
-  sm_config_set_in_pins(&c, pins);
-  sm_config_set_out_pins(&c, pins, CARTRIDGE_BITS + CONTROL_BITS);
+  // Configure the `data_out` state machine
+  pio_sm_claim(pio, SM_DATA_OUT);
+  offset = pio_add_program(pio, &data_out_program);
+  c = data_out_program_get_default_config(offset);
+  sm_config_set_set_pins(&c, control_pins, CONTROL_BITS);
+  sm_config_set_out_pins(&c, pins, 8);
   sm_config_set_out_shift(&c, true,    // shift_direction=right
                           false, 32);  // autopull disabled
-  sm_config_set_in_shift(&c, false,    // shift_direction=left
-                         true, 8);     // autopush enabled
-  pio_sm_init(pio, CARTRIDGE_SM_DATA, offset, &c);
-  pio_sm_put(pio, CARTRIDGE_SM_DATA, DATA_CMD_RELEASE);
+  pio_sm_init(pio, SM_DATA_OUT, offset, &c);
+
+  // Configure the `data_in` state machine
+  pio_sm_claim(pio, SM_DATA_IN);
+  offset = pio_add_program(pio, &data_in_program);
+  c = data_in_program_get_default_config(offset);
+  sm_config_set_set_pins(&c, control_pins, CONTROL_BITS);
+  sm_config_set_in_pins(&c, pins);
+  sm_config_set_in_shift(&c, false,  // shift_direction=left
+                         true, 8);   // autopush enabled
+  pio_sm_init(pio, SM_DATA_IN, offset, &c);
 
   // DMA chain to connect the two state machines
-  InitDma(pio_get_dreq(pio, CARTRIDGE_SM_ADDR, false),
-          &pio->rxf[CARTRIDGE_SM_ADDR], &pio->txf[CARTRIDGE_SM_DATA]);
+  InitDma(pio_get_dreq(pio, SM_ADDR, false), &pio->rxf[SM_ADDR],
+          &pio->txf[SM_DATA_OUT]);
 
   pio_set_sm_mask_enabled(
-      pio, (1 << CARTRIDGE_SM_ADDR) | (1 << CARTRIDGE_SM_DATA), true);
+      pio, (1 << SM_ADDR) | (1 << SM_DATA_OUT) | (1 << SM_DATA_IN), true);
 }
 
 static void __attribute__((optimize("O3")))
@@ -148,44 +133,43 @@ __no_inline_not_in_flash_func(RunAddressDecoder)() {
     // Reset the flash to ram DMA chanel read register to the start of the
     // current ROM memory bank and trigger the DMA chain to read from flash in
     // background as soon as a new address is available on the bus.
-    dma_channel_set_read_addr(DMA_CH_FLASH_TO_RAM, &g_rom, true);
+    dma_channel_set_read_addr(DMA_CH_FLASH, &g_rom, true);
 
     // TODO: wfi
 
-    // Wait until`read_addr` SM is ready to give us the address.
-    // We use the IRQ as additional barrier so we do not accidentally "steal"
-    // the FIFO entry from the DMA.
-    while (!pio_interrupt_get(CARTRIDGE_PIO, 0))
+    // Wait until the `read_addr` SM is ready to give us the address.
+    // We use the IRQ as additional barrier so that we do not accidentally
+    // "steal" the FIFO entry from the DMA.
+    while (!pio_interrupt_get(PIO_CARTRIDGE, IRQ_ADDR))
       ;
-    pio_interrupt_clear(CARTRIDGE_PIO, 0);
+    pio_interrupt_clear(PIO_CARTRIDGE, IRQ_ADDR);
 
-    uint32_t signals = pio_sm_get_blocking(CARTRIDGE_PIO, CARTRIDGE_SM_ADDR);
+    uint32_t signals = pio_sm_get_blocking(PIO_CARTRIDGE, SM_ADDR);
 
     uint32_t action = signals >> 16;
     uint32_t addr = signals & 0xFFFF;
 
     if (action == ROM_READ && addr < 0x8000) {  // A15 as chip select
-      // No manual action required, all handled by DMA.
+      PIO_CARTRIDGE->irq_force = IRQ_DATA_OUT;
+      // No other action required, all handled by DMA.
     } else {
-      // Abort the DMA chain. Only the flash to ram channel should be active
-      // but abort them all just to be sure.
-      dma_hw->abort = (1 << DMA_CH_ADDR_OFFSET) | (1 << DMA_CH_FLASH_TO_RAM) |
-                      (1 << DMA_CH_DATA_CMD);
+      // Abort the DMA chain. Only the flash channel should be active but abort
+      // both just to be sure.
+      dma_hw->abort = (1 << DMA_CH_ADDR_OFFSET) | (1 << DMA_CH_FLASH);
 
       if (action == RAM_READ && addr & 0x2000) {  // A13 as secondary high CS.
-        pio_sm_put(CARTRIDGE_PIO, CARTRIDGE_SM_DATA,
-                   DATA_CMD_OUT | g_ram[addr & 0x0FFF]);
-      } else {
-        // Idle or Write
-        pio_sm_put(CARTRIDGE_PIO, CARTRIDGE_SM_DATA, DATA_CMD_IN);
-      }
-
-      uint8_t data = pio_sm_get_blocking(CARTRIDGE_PIO, CARTRIDGE_SM_DATA);
-      if (action == RAM_WRITE && addr & 0x2000) {  // A13 as secondary high CS.
+        PIO_CARTRIDGE->irq_force = IRQ_DATA_OUT;
+        pio_sm_put(PIO_CARTRIDGE, SM_DATA_OUT, g_ram[addr & 0x0FFF]);
+      } else if (action == RAM_WRITE &&
+                 addr & 0x2000) {  // A13 as secondary high CS.
+        PIO_CARTRIDGE->irq_force = IRQ_DATA_IN;
+        uint8_t data = pio_sm_get_blocking(PIO_CARTRIDGE, SM_DATA_OUT);
         g_ram[addr & 0x0FFF] = data;
       } else if (action == MBC_WRITE &&
                  // A15 as primary and A14 as secondary high CS.
                  addr < 0x8000 && addr & 0x4000) {
+        PIO_CARTRIDGE->irq_force = IRQ_DATA_IN;
+        uint8_t data = pio_sm_get_blocking(PIO_CARTRIDGE, SM_DATA_OUT);
         // TODO
       }
     }
@@ -204,7 +188,7 @@ int main() {
   gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
   gpio_put(PICO_DEFAULT_LED_PIN, 1);
 
-  InitCartridgeInterface(CARTRIDGE_PIO, PIN_BASE);
+  InitCartridgeInterface(PIO_CARTRIDGE, PIN_BASE);
 
   // Make sure that no cade runs from flash memory anymore to guarantee for
   // constant flash access times.
