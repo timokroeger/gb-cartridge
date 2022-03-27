@@ -37,9 +37,10 @@
 .define public RAM_READ  0b00
 .define public RAM_WRITE 0b10
 
-.define public IRQ_ADDR 0
-.define public IRQ_DATA_OUT 1
-.define public IRQ_DATA_IN 2
+.define public IRQ_START    0
+.define public IRQ_ADDR     1
+.define public IRQ_DATA_OUT 2
+.define public IRQ_DATA_IN  3
 
 ;------------------------------------------------------------------------------;
 
@@ -59,6 +60,7 @@
     ; Reference: https://forums.raspberrypi.com/viewtopic.php?t=321852#p1926757
     wait 0 pin CLK
     wait 1 pin CLK [12]     ; the delay starts after the pin is high   cycle  0
+    irq IRQ_START
 
     ; Read the address but ignore A15
     set pins, ADDR_HI [1]   ;                                          cycle 14

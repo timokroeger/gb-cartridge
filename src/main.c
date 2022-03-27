@@ -122,18 +122,28 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
   // DMA chain to connect the two state machines
   InitDma(pio_get_dreq(pio, SM_ADDR, false), &pio->rxf[SM_ADDR],
           &pio->txf[SM_DATA_OUT]);
+}
 
+static void StartCartridgeInterface(PIO pio) {
   pio_set_sm_mask_enabled(
       pio, (1 << SM_ADDR) | (1 << SM_DATA_OUT) | (1 << SM_DATA_IN), true);
 }
 
 static void __attribute__((optimize("O3")))
 __no_inline_not_in_flash_func(RunAddressDecoder)() {
+  StartCartridgeInterface(PIO_CARTRIDGE);
+
   while (true) {
+    // Synchronize to the bus clock.
+    while (!pio_interrupt_get(PIO_CARTRIDGE, IRQ_START))
+      ;
+    pio_interrupt_clear(PIO_CARTRIDGE, IRQ_START);
+
     // Reset the flash to ram DMA chanel read register to the start of the
     // current ROM memory bank and trigger the DMA chain to read from flash in
     // background as soon as a new address is available on the bus.
-    dma_channel_set_read_addr(DMA_CH_FLASH, &g_rom, true);
+    dma_channel_set_read_addr(DMA_CH_FLASH, &g_rom, false);
+    dma_channel_set_trans_count(DMA_CH_ADDR_OFFSET, 1, true);
 
     // TODO: wfi
 
