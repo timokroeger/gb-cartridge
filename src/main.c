@@ -87,7 +87,7 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
 
   // Disable the synchronizer circuit for all cartridge signals.
   // Makes waiting for CLK edges 2 cycles faster.
-  pio->input_sync_bypass |= (0x0FFF << pins);
+  pio->input_sync_bypass |= (((1 << CARTRIDGE_BITS) - 1) << pins);
 
   // Configure the `read_addr` state machine
   pio_sm_claim(pio, SM_ADDR);
@@ -139,13 +139,16 @@ __no_inline_not_in_flash_func(RunAddressDecoder)() {
       ;
     pio_interrupt_clear(PIO_CARTRIDGE, IRQ_START);
 
+    // The flash DMA writes data even for idle cycles.
+    // Clear the FIFO to discard this data.
+    pio_sm_clear_fifos(PIO_CARTRIDGE, SM_DATA_OUT);
+
     // Reset the flash to ram DMA chanel read register to the start of the
     // current ROM memory bank and trigger the DMA chain to read from flash in
     // background as soon as a new address is available on the bus.
-    dma_channel_set_read_addr(DMA_CH_FLASH, &g_rom, false);
+    dma_channel_set_read_addr(DMA_CH_FLASH, xip_nocache_noalloc_alias(&g_rom),
+                              false);
     dma_channel_set_trans_count(DMA_CH_ADDR_OFFSET, 1, true);
-
-    // TODO: wfi
 
     // Wait until the `read_addr` SM is ready to give us the address.
     // We use the IRQ as additional barrier so that we do not accidentally
@@ -160,29 +163,30 @@ __no_inline_not_in_flash_func(RunAddressDecoder)() {
     uint32_t addr = signals & 0xFFFF;
 
     if (action == ROM_READ && addr < 0x8000) {  // A15 as chip select
-      PIO_CARTRIDGE->irq_force = IRQ_DATA_OUT;
+      // TODO: not working
+      PIO_CARTRIDGE->irq_force = (1 << IRQ_DATA_OUT);
       // No other action required, all handled by DMA.
-    } else {
-      // Abort the DMA chain. Only the flash channel should be active but abort
-      // both just to be sure.
-      dma_hw->abort = (1 << DMA_CH_ADDR_OFFSET) | (1 << DMA_CH_FLASH);
-
-      if (action == RAM_READ && addr & 0x2000) {  // A13 as secondary high CS.
-        PIO_CARTRIDGE->irq_force = IRQ_DATA_OUT;
-        pio_sm_put(PIO_CARTRIDGE, SM_DATA_OUT, g_ram[addr & 0x0FFF]);
-      } else if (action == RAM_WRITE &&
-                 addr & 0x2000) {  // A13 as secondary high CS.
-        PIO_CARTRIDGE->irq_force = IRQ_DATA_IN;
-        uint8_t data = pio_sm_get_blocking(PIO_CARTRIDGE, SM_DATA_OUT);
-        g_ram[addr & 0x0FFF] = data;
-      } else if (action == MBC_WRITE &&
-                 // A15 as primary and A14 as secondary high CS.
-                 addr < 0x8000 && addr & 0x4000) {
-        PIO_CARTRIDGE->irq_force = IRQ_DATA_IN;
-        uint8_t data = pio_sm_get_blocking(PIO_CARTRIDGE, SM_DATA_OUT);
-        // TODO
-      }
+    } else if (action == RAM_READ &&
+               addr & 0x2000) {  // A13 as secondary high CS.
+      // We race the flash DMA and put data into the FIFO first.
+      // DMA will still write to the FIFO but the SM ignores that and we
+      // clear it from the FIFO at the beginning of the next cycle.
+      pio_sm_put(PIO_CARTRIDGE, SM_DATA_OUT, g_ram[addr & 0x0FFF]);
+      PIO_CARTRIDGE->irq_force = (1 << IRQ_DATA_OUT);
+    } else if (action == RAM_WRITE &&
+               addr & 0x2000) {  // A13 as secondary high CS.
+      PIO_CARTRIDGE->irq_force = (1 << IRQ_DATA_IN);
+      uint8_t data = pio_sm_get_blocking(PIO_CARTRIDGE, SM_DATA_IN);
+      g_ram[addr & 0x0FFF] = data;
+    } else if (action == MBC_WRITE &&
+               // A15 as primary and A14 as secondary high CS.
+               addr < 0x8000 && addr & 0x4000) {
+      PIO_CARTRIDGE->irq_force = (1 << IRQ_DATA_IN);
+      uint8_t data = pio_sm_get_blocking(PIO_CARTRIDGE, SM_DATA_IN);
+      // TODO
     }
+
+    // TODO: wfi
   }
 }
 
