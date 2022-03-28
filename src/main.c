@@ -8,6 +8,8 @@
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
+#include "hardware/structs/xip_ctrl.h"
+#include "pico/multicore.h"
 #include "pico/stdlib.h"
 #include "rom.h"
 
@@ -28,7 +30,8 @@
 #define DMA_CH_FLASH 1
 #define DMA_CH_DATA_CMD 2
 
-static uint8_t g_rom_bank0[ROM_BANK_SIZE];
+#define ROM_BANK_0 ((volatile uint8_t *)XIP_SRAM_BASE)
+
 static uint8_t g_ram[RAM_SIZE];
 
 static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
@@ -131,8 +134,7 @@ static void StartCartridgeInterface(PIO pio) {
       pio, (1 << SM_ADDR) | (1 << SM_DATA_OUT) | (1 << SM_DATA_IN), true);
 }
 
-static void __attribute__((optimize("O3")))
-__no_inline_not_in_flash_func(RunAddressDecoder)() {
+__noinline __scratch_x("main") static void MainCore1() {
   StartCartridgeInterface(PIO_CARTRIDGE);
 
   while (true) {
@@ -169,7 +171,7 @@ __no_inline_not_in_flash_func(RunAddressDecoder)() {
         // We race the flash DMA and put data into the FIFO first.
         // DMA will still write to the FIFO but the SM ignores that and we
         // clear it from the FIFO at the beginning of the next cycle.
-        pio_sm_put(PIO_CARTRIDGE, SM_DATA_OUT, g_rom_bank0[addr]);
+        pio_sm_put(PIO_CARTRIDGE, SM_DATA_OUT, ROM_BANK_0[addr]);
         PIO_CARTRIDGE->irq_force = (1 << IRQ_DATA_OUT);
       } else {  // Bank 1..n
         // No action required, all handled by the flash DMA.
@@ -197,6 +199,28 @@ __no_inline_not_in_flash_func(RunAddressDecoder)() {
   }
 }
 
+__noinline __scratch_y("main") static void MainCore0() {
+  // We are now running from RAM so that the cartridge interface has exclusive
+  // access to flash. Because we rely on constant flash access time there is no
+  // need to keep the XIP cache so lets disable it.
+  xip_ctrl_hw->ctrl = 0;
+
+  // Mirror ROM bank 0 to the now unused 16KiB XIP cache SRAM.
+  uint dma_ch_memcpy = dma_claim_unused_channel(true);
+  dma_channel_config c = dma_channel_get_default_config(dma_ch_memcpy);
+  channel_config_set_read_increment(&c, true);
+  channel_config_set_write_increment(&c, true);
+  dma_channel_configure(dma_ch_memcpy, &c, ROM_BANK_0, g_rom, ROM_BANK_SIZE / 4,
+                        true);
+  dma_channel_wait_for_finish_blocking(dma_ch_memcpy);
+
+  multicore_launch_core1(MainCore1);
+
+  while (true) {
+    __wfi();
+  }
+}
+
 int main() {
   // TODO: remove
   // Run system clock at 1MHz for easy cycle counting with a logic analyzer.
@@ -209,13 +233,8 @@ int main() {
   gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
   gpio_put(PICO_DEFAULT_LED_PIN, 1);
 
-  memcpy(g_rom_bank0, g_rom, sizeof(g_rom_bank0));
-
   InitCartridgeInterface(PIO_CARTRIDGE, PIN_BASE);
-
-  // Make sure that no cade runs from flash memory anymore to guarantee for
-  // constant flash access times.
-  RunAddressDecoder();
+  MainCore0();
 
   return 0;
 }

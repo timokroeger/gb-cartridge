@@ -64,8 +64,8 @@
 
     ; Read the address but ignore A15
     set pins, ADDR_HI [1]   ;                                          cycle 15
-    in pins, 6              ; A13-A8                                   cycle 18
-    set pins, ADDR_LO [1]   ;                                          cycle 19
+    in pins, 6              ; A13-A8                                   cycle 17
+    set pins, ADDR_LO [1]   ;                                          cycle 18
     in pins, 8              ; A7-A0, autopush                          cycle 20
     ; DMA flash access now runs in parallel
 

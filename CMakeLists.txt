@@ -20,7 +20,11 @@ target_link_libraries(cartridge
     hardware_clocks
     hardware_dma
     hardware_pio
+    pico_multicore
     pico_stdlib
+)
+target_compile_definitions(cartridge PRIVATE
+    PICO_TIME_DEFAULT_ALARM_POOL_DISABLED
 )
 pico_add_extra_outputs(cartridge)
 
@@ -37,9 +41,5 @@ target_link_libraries(simulator
 )
 pico_enable_stdio_usb(simulator 1)
 pico_enable_stdio_uart(simulator 0)
-target_compile_definitions(simulator PRIVATE
-#    PICO_STDIO_ENABLE_CRLF_SUPPORT=0
-#    PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=10000
-)
 pico_set_binary_type(simulator no_flash)
 pico_add_extra_outputs(simulator)
