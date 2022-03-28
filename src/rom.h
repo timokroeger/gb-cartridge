@@ -5,7 +5,8 @@
 
 #include "pico/platform.h"
 
-#define ROM_ATTRIBUTES __in_flash() __aligned(32 * 1024)
+#define ROM_BANK_SIZE 16 * 1024
+#define ROM_ATTRIBUTES __in_flash() __aligned(ROM_BANK_SIZE)
 
 extern const uint8_t g_rom[] ROM_ATTRIBUTES;
 

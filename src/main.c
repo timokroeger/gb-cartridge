@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "cartridge_interface.pio.h"
 #include "hardware/clocks.h"
@@ -27,6 +28,7 @@
 #define DMA_CH_FLASH 1
 #define DMA_CH_DATA_CMD 2
 
+static uint8_t g_rom_bank0[ROM_BANK_SIZE];
 static uint8_t g_ram[RAM_SIZE];
 
 static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
@@ -96,7 +98,7 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
   sm_config_set_set_pins(&c, control_pins, CONTROL_BITS);
   sm_config_set_in_pins(&c, pins);
   sm_config_set_in_shift(&c, false,  // shift_direction=left
-                         true, 15);  // autopush enabled
+                         true, 14);  // autopush enabled
   pio_sm_init(pio, SM_ADDR, offset, &c);
 
   // Configure the `data_out` state machine
@@ -146,8 +148,8 @@ __no_inline_not_in_flash_func(RunAddressDecoder)() {
     // Reset the flash to ram DMA chanel read register to the start of the
     // current ROM memory bank and trigger the DMA chain to read from flash in
     // background as soon as a new address is available on the bus.
-    dma_channel_set_read_addr(DMA_CH_FLASH, xip_nocache_noalloc_alias(&g_rom),
-                              false);
+    dma_channel_set_read_addr(
+        DMA_CH_FLASH, xip_nocache_noalloc_alias(&g_rom[ROM_BANK_SIZE]), false);
     dma_channel_set_trans_count(DMA_CH_ADDR_OFFSET, 1, true);
 
     // Wait until the `read_addr` SM is ready to give us the address.
@@ -162,15 +164,20 @@ __no_inline_not_in_flash_func(RunAddressDecoder)() {
     uint32_t action = signals >> 16;
     uint32_t addr = signals & 0xFFFF;
 
-    if (action == ROM_READ && addr < 0x8000) {  // A15 as chip select
-      // TODO: not working
-      PIO_CARTRIDGE->irq_force = (1 << IRQ_DATA_OUT);
-      // No other action required, all handled by DMA.
+    if (action == ROM_READ && addr < 0x8000) {  // A15 as low CS.
+      if (addr < 0x4000) {                      // Bank 0
+        // We race the flash DMA and put data into the FIFO first.
+        // DMA will still write to the FIFO but the SM ignores that and we
+        // clear it from the FIFO at the beginning of the next cycle.
+        pio_sm_put(PIO_CARTRIDGE, SM_DATA_OUT, g_rom_bank0[addr]);
+        PIO_CARTRIDGE->irq_force = (1 << IRQ_DATA_OUT);
+      } else {  // Bank 1..n
+        // No action required, all handled by the flash DMA.
+      }
     } else if (action == RAM_READ &&
                addr & 0x2000) {  // A13 as secondary high CS.
-      // We race the flash DMA and put data into the FIFO first.
-      // DMA will still write to the FIFO but the SM ignores that and we
-      // clear it from the FIFO at the beginning of the next cycle.
+      // Same principle as with ROM bank 0 acces, we are faster than the flash
+      // DMA.
       pio_sm_put(PIO_CARTRIDGE, SM_DATA_OUT, g_ram[addr & 0x0FFF]);
       PIO_CARTRIDGE->irq_force = (1 << IRQ_DATA_OUT);
     } else if (action == RAM_WRITE &&
@@ -201,6 +208,8 @@ int main() {
   gpio_init(PICO_DEFAULT_LED_PIN);
   gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
   gpio_put(PICO_DEFAULT_LED_PIN, 1);
+
+  memcpy(g_rom_bank0, g_rom, sizeof(g_rom_bank0));
 
   InitCartridgeInterface(PIO_CARTRIDGE, PIN_BASE);
 
