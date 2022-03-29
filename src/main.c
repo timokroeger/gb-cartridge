@@ -30,9 +30,21 @@
 #define DMA_CH_FLASH 1
 #define DMA_CH_DATA_CMD 2
 
-#define ROM_BANK_0 ((volatile uint8_t *)XIP_SRAM_BASE)
-
+static uint8_t g_rom_bank0[ROM_BANK_SIZE];
 static uint8_t g_ram[RAM_SIZE];
+
+// Mirrors ROM bank 0 from flash to RAM.
+static void MirrorBank0(void) {
+  uint dma_ch_memcpy = dma_claim_unused_channel(true);
+  dma_channel_config c = dma_channel_get_default_config(dma_ch_memcpy);
+  channel_config_set_read_increment(&c, true);
+  channel_config_set_write_increment(&c, true);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+  dma_channel_configure(dma_ch_memcpy, &c, g_rom_bank0, g_rom,
+                        ROM_BANK_SIZE / 4, true);
+  dma_channel_wait_for_finish_blocking(dma_ch_memcpy);
+  dma_channel_unclaim(dma_ch_memcpy);
+}
 
 static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
                     volatile void *data_fifo) {
@@ -46,6 +58,7 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
   c = dma_channel_get_default_config(DMA_CH_ADDR_OFFSET);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
   channel_config_set_dreq(&c, addr_dreq);
   // Chaining cannot be used here because it starts the next DMA before its
   // read register received the update. Use the trigger feature instead to
@@ -127,6 +140,8 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
   // DMA chain to connect the two state machines
   InitDma(pio_get_dreq(pio, SM_ADDR, false), &pio->rxf[SM_ADDR],
           &pio->txf[SM_DATA_OUT]);
+
+  MirrorBank0();
 }
 
 static void StartCartridgeInterface(PIO pio) {
@@ -171,7 +186,7 @@ __noinline __scratch_x("main") static void MainCore1() {
         // We race the flash DMA and put data into the FIFO first.
         // DMA will still write to the FIFO but the SM ignores that and we
         // clear it from the FIFO at the beginning of the next cycle.
-        pio_sm_put(PIO_CARTRIDGE, SM_DATA_OUT, ROM_BANK_0[addr]);
+        pio_sm_put(PIO_CARTRIDGE, SM_DATA_OUT, g_rom_bank0[addr]);
         PIO_CARTRIDGE->irq_force = (1 << IRQ_DATA_OUT);
       } else {  // Bank 1..n
         // No action required, all handled by the flash DMA.
@@ -204,15 +219,6 @@ __noinline __scratch_y("main") static void MainCore0() {
   // access to flash. Because we rely on constant flash access time there is no
   // need to keep the XIP cache so lets disable it.
   xip_ctrl_hw->ctrl = 0;
-
-  // Mirror ROM bank 0 to the now unused 16KiB XIP cache SRAM.
-  uint dma_ch_memcpy = dma_claim_unused_channel(true);
-  dma_channel_config c = dma_channel_get_default_config(dma_ch_memcpy);
-  channel_config_set_read_increment(&c, true);
-  channel_config_set_write_increment(&c, true);
-  dma_channel_configure(dma_ch_memcpy, &c, ROM_BANK_0, g_rom, ROM_BANK_SIZE / 4,
-                        true);
-  dma_channel_wait_for_finish_blocking(dma_ch_memcpy);
 
   multicore_launch_core1(MainCore1);
 
