@@ -13,7 +13,7 @@
 #include "simulation.pio.h"
 
 #define TARGET_CLK_HZ (1048576u / 125)
-#define CLK_SM_DIV 125000000u / (TARGET_CLK_HZ * 12 * 2)
+#define CLK_SM_DIV 125000000u / (TARGET_CLK_HZ * 8 * 4)
 
 // output of 8 patters 4bit each
 #define SIM_IDLE 0b11011101110111011100110011001100u
@@ -30,6 +30,8 @@ typedef struct {
   uint sm_addr_hi;
   uint sm_addr_lo;
   uint sm_data;
+
+  uint pin_dir_data;
 } Simulation;
 
 static void SimulationInit(Simulation *sim, PIO pio_clk, uint pins_clk,
@@ -65,7 +67,6 @@ static void SimulationInit(Simulation *sim, PIO pio_clk, uint pins_clk,
   sm_config_set_clkdiv_int_frac(&c, CLK_SM_DIV, 0);
   pio_sm_init(pio_clk, sm_clk, offset, &c);
   pio_sm_put(pio_clk, sm_clk, SIM_IDLE);
-  pio_sm_set_enabled(pio_clk, sm_clk, true);
 
   sim->pio_clk = pio_clk;
   sim->sm_clk = sm_clk;
@@ -105,6 +106,20 @@ static void SimulationInit(Simulation *sim, PIO pio_clk, uint pins_clk,
   sim->sm_addr_hi = sm_addr_hi;
   sim->sm_addr_lo = sm_addr_lo;
   sim->sm_data = sm_data;
+  sim->pin_dir_data = dir_data;
+}
+
+static void SimulationStart(const Simulation *sim) {
+  gpio_set_inover(sim->pin_dir_data, GPIO_OVERRIDE_NORMAL);
+  pio_sm_set_enabled(sim->pio_clk, sim->sm_clk, true);
+}
+
+static void SimulationStop(const Simulation *sim) {
+  // Stop at the end of a cycle
+  while (!pio_interrupt_get(sim->pio_clk, 0))
+    ;
+  pio_sm_set_enabled(sim->pio_clk, sim->sm_clk, false);
+  gpio_set_inover(sim->pin_dir_data, GPIO_OVERRIDE_HIGH);
 }
 
 static uint8_t SimulationCmd(const Simulation *sim, uint16_t addr,
@@ -148,15 +163,21 @@ int main() {
   Simulation sim;
   SimulationInit(&sim, pio0, 8, pio1, 0, 15, 14, 13, 12);
 
-  uint8_t rx_buf[8];
-  size_t rx_buf_idx = 0;
-
   gpio_init(PICO_DEFAULT_LED_PIN);
   gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-  gpio_put(PICO_DEFAULT_LED_PIN, 1);
 
+  bool was_connected = false;
+  uint8_t rx_buf[8];
+  size_t rx_buf_idx = 0;
   while (true) {
-    gpio_put(PICO_DEFAULT_LED_PIN, stdio_usb_connected());
+    bool connected = stdio_usb_connected();
+    gpio_put(PICO_DEFAULT_LED_PIN, connected);
+    if (connected && !was_connected) {
+      SimulationStart(&sim);
+    } else if (!connected && was_connected) {
+      SimulationStop(&sim);
+    }
+    was_connected = connected;
 
     int c = getchar_timeout_us(10000);
     if (c < 0) {
@@ -183,7 +204,7 @@ int main() {
       uint8_t tx_buf[2];
       cobs_encode_result er = cobs_encode(tx_buf, sizeof(tx_buf), &data, 1);
       for (size_t i = 0; i < er.out_len; i++) {
-        putchar(tx_buf[i]);
+        putchar_raw(tx_buf[i]);
       }
       putchar_raw(0);  // frame marker
     } else {
