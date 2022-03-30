@@ -46,6 +46,11 @@
 
 .program read_addr
 
+    ; Update the flash read offset (ROM base + ROM bank number)
+    pull noblock            ; When no data available: `mov osr, x`
+    mov x, osr              ; Store ROM bank in X
+    in x, 18
+
     ; PICO clock = 125MHz
     ; GB clock = 4^22Hz = ~4Mhz
     ; BUS clock = GB clock / 4 = 2^10Hz = ~1MHz
@@ -62,7 +67,8 @@
     wait 1 pin CLK          ; the delay starts after the pin is high   cycle  0
     irq IRQ_START [12]
 
-    ; Read the address but ignore A15
+    ; Read the address but ignore A15 and A14 because we only need an offset
+    ; into the current ROM bank (which is only 16KiB big).
     set pins, ADDR_HI [1]   ;                                          cycle 15
     in pins, 6              ; A13-A8                                   cycle 17
     set pins, ADDR_LO [1]   ;                                          cycle 18
@@ -73,7 +79,8 @@
 
     ; The Gameboy updates the A15 or and #CS lines on the second rising GB
     ; clock edge. Wait until cycle 30 to sample those.
-    set pins, ADDR_HI [8]   ;                                          cycle 22
+    in null, 14 [6]         ; make autopush reach the threshold        cycle 22
+    set pins, ADDR_HI [1]   ;                                          cycle 29
     in pins, 10             ; #RD, #CS, A15..A8                        cycle 31
     set pins, ADDR_LO [1]   ;                                          cycle 32
     in pins, 8              ; A7-A0, autopush                          cycle 33
