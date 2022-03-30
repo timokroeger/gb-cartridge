@@ -119,7 +119,7 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
   pio_sm_claim(pio, SM_DATA_OUT);
   offset = pio_add_program(pio, &data_out_program);
   c = data_out_program_get_default_config(offset);
-  sm_config_set_set_pins(&c, control_pins, CONTROL_BITS);
+  sm_config_set_sideset_pins(&c, control_pins);
   sm_config_set_out_pins(&c, pins, 8);
   sm_config_set_out_shift(&c, true,    // shift_direction=right
                           false, 32);  // autopull disabled

@@ -88,20 +88,21 @@
 ;------------------------------------------------------------------------------;
 
 .program data_out
+.side_set 4 opt
 
     ; Wait for the address decoder to decide if we can write to the bus.
     mov osr, ~null          ; Prepare OSR with all ones.
     wait 1 irq IRQ_DATA_OUT
-    set pins, DATA_OUT      ; Switch transsceiver direction first.
-    out pindirs, 8          ; Then update the direction of our pins.
+
+    ; Switch transsceiver direction and our GPIO direction.
+    out pindirs, 8 side DATA_OUT
 
     ; Data must be available at the third rising edge of GB clock which
     ; translates to a cycle count of 89. For flash access the loop of
     ; `read_addr` RX FIFO -> DMA chain -> `data_out` TX FIFO takes 63
     ; cycles.
 
-    ; Write output data (or not when selecting DATA_IN).
-    ; TODO: data is ready immediatelly in the second cycle, why???
+    ; Write the output data
     pull                    ;                                cycle 20 + 60 = 80
     out pins, 8             ;                                          cycle 81
     ; Deadline is met with 8 cycles spare.
@@ -109,8 +110,7 @@
     ; Release the data lines at the end of the cycle.
     mov osr, null
     wait 1 pin CLK          ;                                          cycle  0
-    out pindirs, 8          ;                                          cycle  2
-    set pins, DATA_IN       ;                                          cycle  3
+    out pindirs, 8 side DATA_IN;                                       cycle  2
 
 .program data_in
 
