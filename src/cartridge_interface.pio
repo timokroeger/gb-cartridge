@@ -46,11 +46,6 @@
 
 .program read_addr
 
-    ; Update the flash read offset (ROM base + ROM bank number)
-    pull noblock            ; When no data available: `mov osr, x`
-    mov x, osr              ; Store ROM bank in X
-    in x, 18
-
     ; PICO clock = 125MHz
     ; GB clock = 4^22Hz = ~4Mhz
     ; BUS clock = GB clock / 4 = 2^10Hz = ~1MHz
@@ -75,11 +70,10 @@
     in pins, 8              ; A7-A0, autopush                          cycle 20
     ; DMA flash access now runs in parallel
 
-    irq IRQ_ADDR            ; notify address decoder to poll for data  cycle 21
+    irq IRQ_ADDR [7]        ; notify address decoder to poll for data  cycle 21
 
     ; The Gameboy updates the A15 or and #CS lines on the second rising GB
     ; clock edge. Wait until cycle 30 to sample those.
-    in null, 14 [6]         ; make autopush reach the threshold        cycle 22
     set pins, ADDR_HI [1]   ;                                          cycle 29
     in pins, 10             ; #RD, #CS, A15..A8                        cycle 31
     set pins, ADDR_LO [1]   ;                                          cycle 32
