@@ -92,13 +92,21 @@
     out pindirs, 8 side DATA_OUT
 
     ; Data must be available at the third rising edge of GB clock which
-    ; translates to a cycle count of 89. For flash access the loop of
-    ; `read_addr` RX FIFO -> DMA chain -> `data_out` TX FIFO takes 63
-    ; cycles.
+    ; translates to a cycle count of 89.
+    ;
+    ; For flash access the loop of
+    ; `read_addr` RX FIFO -> DMA chain -> `data_out` TX FIFO
+    ; takes either 58 or 59 cycles as measured with a simple test SM:
+    ; ``` pio
+    ; push side 1
+    ; pull side 0
+    ; ```
+    ; In our setup it appears not to be fully deterministic and sometimes
+    ; we are one additional cycle cycle slower.
 
     ; Write the output data
-    pull                    ;                                cycle 20 + 60 = 80
-    out pins, 8             ;                                          cycle 81
+    pull                    ;                             cycle 20 + 58,59 = 79
+    out pins, 8             ;                                    cycle 79,80,81
     ; Deadline is met with 8 cycles spare.
 
     ; Release the data lines at the end of the cycle.

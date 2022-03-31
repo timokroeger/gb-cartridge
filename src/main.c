@@ -67,8 +67,8 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
       hw_set_alias(&dma_hw->ch[DMA_CH_FLASH].al3_read_addr_trig), addr_fifo, 1,
       false);
 
-  // Step 2: Copy from flash to `data_out` SM. This takes ~50 cycles and is the
-  //         slowest operation of a bus access cycle.
+  // Step 2: Copy from flash to `data_out` SM. A flash read takes 44 cycles
+  //         and is the slowest operation of a bus access cycle.
   dma_channel_claim(DMA_CH_FLASH);
   c = dma_channel_get_default_config(DMA_CH_FLASH);
   channel_config_set_read_increment(&c, false);
@@ -147,17 +147,20 @@ static inline void StartCartridgeInterface(PIO pio) {
       pio, (1 << SM_ADDR) | (1 << SM_DATA_OUT) | (1 << SM_DATA_IN), true);
 }
 
-__noinline __scratch_x("main") static void MainCore1() {
+__noinline __scratch_x("main") static void MainCore1(void) {
   StartCartridgeInterface(PIO_CARTRIDGE);
 
   while (true) {
+    // TODO: check for possible delay in read after write
+
     // Synchronize to the bus clock.
+    // TODO: wfi to reduce jitter
+    pio_interrupt_clear(PIO_CARTRIDGE, IRQ_START);
     while (!pio_interrupt_get(PIO_CARTRIDGE, IRQ_START))
       ;
-    pio_interrupt_clear(PIO_CARTRIDGE, IRQ_START);
 
     // The flash DMA writes data even for idle cycles.
-    // Clear the FIFO to discard this data.
+    // Clear the FIFO to discard remaining data from previous cycles.
     pio_sm_clear_fifos(PIO_CARTRIDGE, SM_DATA_OUT);
 
     // Reset the flash to ram DMA chanel read register to the start of the
@@ -170,6 +173,7 @@ __noinline __scratch_x("main") static void MainCore1() {
     // Wait until the `read_addr` SM is ready to give us the address.
     // We use the IRQ as additional barrier so that we do not accidentally
     // "steal" the FIFO entry from the DMA.
+    // TODO: wfi to reduce jitter
     while (!pio_interrupt_get(PIO_CARTRIDGE, IRQ_ADDR))
       ;
     pio_interrupt_clear(PIO_CARTRIDGE, IRQ_ADDR);
@@ -213,7 +217,7 @@ __noinline __scratch_x("main") static void MainCore1() {
   }
 }
 
-__noinline __scratch_y("main") static void MainCore0() {
+__noinline __scratch_y("main") static void MainCore0(void) {
   // We are now running from RAM so that the cartridge interface has exclusive
   // access to flash. Because we rely on constant flash access time there is no
   // need to keep the XIP cache so lets disable it.
