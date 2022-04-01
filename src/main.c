@@ -8,6 +8,7 @@
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
+#include "hardware/structs/bus_ctrl.h"
 #include "hardware/structs/xip_ctrl.h"
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
@@ -78,6 +79,9 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
                         NULL,  // Reset to beginning of current ROM bank by the
                                // CPU and updated by DMA Step 1.
                         1, false);
+
+  bus_ctrl_hw->priority =
+      BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
 }
 
 static void InitCartridgeInterface(PIO pio, uint pins) {
@@ -174,11 +178,10 @@ __noinline __scratch_x("main") static void MainCore1(void) {
     // We use the IRQ as additional barrier so that we do not accidentally
     // "steal" the FIFO entry from the DMA.
     // TODO: wfi to reduce jitter
+    pio_interrupt_clear(PIO_CARTRIDGE, IRQ_ADDR);
     while (!pio_interrupt_get(PIO_CARTRIDGE, IRQ_ADDR))
       ;
-    pio_interrupt_clear(PIO_CARTRIDGE, IRQ_ADDR);
-
-    uint32_t signals = pio_sm_get_blocking(PIO_CARTRIDGE, SM_ADDR);
+    uint32_t signals = pio_sm_get(PIO_CARTRIDGE, SM_ADDR);
 
     uint32_t action = signals >> 16;
     uint32_t addr = signals & 0xFFFF;

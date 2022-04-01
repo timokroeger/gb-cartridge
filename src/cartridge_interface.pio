@@ -67,17 +67,16 @@
     set pins, ADDR_HI [1]   ;                                          cycle 15
     in pins, 6              ; A13-A8                                   cycle 17
     set pins, ADDR_LO [1]   ;                                          cycle 18
-    in pins, 8              ; A7-A0, autopush                          cycle 20
+    in pins, 8 [9]          ; A7-A0, autopush                          cycle 20
     ; DMA flash access now runs in parallel
-
-    irq IRQ_ADDR [7]        ; notify address decoder to poll for data  cycle 21
 
     ; The Gameboy updates the A15 or and #CS lines on the second rising GB
     ; clock edge. Wait until cycle 30 to sample those.
-    set pins, ADDR_HI [1]   ;                                          cycle 29
-    in pins, 10             ; #RD, #CS, A15..A8                        cycle 31
-    set pins, ADDR_LO [1]   ;                                          cycle 32
-    in pins, 8              ; A7-A0, autopush                          cycle 33
+    set pins, ADDR_HI [1]   ;                                          cycle 30
+    in pins, 10             ; #RD, #CS, A15..A8                        cycle 32
+    set pins, ADDR_LO       ;                                          cycle 33
+    irq IRQ_ADDR            ; notify address decoder to get for data   cycle 34
+    in pins, 8              ; A7-A0, autopush                          cycle 35
 
 ;------------------------------------------------------------------------------;
 
