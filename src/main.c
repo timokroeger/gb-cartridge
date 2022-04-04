@@ -152,6 +152,12 @@ static inline void StartCartridgeInterface(PIO pio) {
 }
 
 __noinline __scratch_x("main") static void MainCore1(void) {
+  // To guarantue constant flash access times for the cartridge interface we
+  // must not run any code from flash anymore. Disable the unused XIP cache and
+  // repurpose it as additional SRAM to mirror ROM bank 0.
+  xip_ctrl_hw->ctrl = 0;
+  // TODO: MirrorBank0();
+
   StartCartridgeInterface(PIO_CARTRIDGE);
 
   while (true) {
@@ -163,12 +169,12 @@ __noinline __scratch_x("main") static void MainCore1(void) {
     while (!pio_interrupt_get(PIO_CARTRIDGE, IRQ_START))
       ;
 
-    // The flash DMA writes data even for idle cycles.
+    // The flash DMA writes data even for RAM acces, write and idle cycles.
     // Clear the FIFO to discard remaining data from previous cycles.
     pio_sm_clear_fifos(PIO_CARTRIDGE, SM_DATA_OUT);
 
-    // Reset the flash to ram DMA chanel read register to the start of the
-    // current ROM memory bank and trigger the DMA chain to read from flash in
+    // Reset the flash DMA channel read register to the start of the current
+    // ROM memory bank and trigger the DMA chain to read from flash in
     // background as soon as a new address is available on the bus.
     dma_channel_set_read_addr(
         DMA_CH_FLASH, xip_nocache_noalloc_alias(&g_rom[ROM_BANK_SIZE]), false);
@@ -221,11 +227,6 @@ __noinline __scratch_x("main") static void MainCore1(void) {
 }
 
 __noinline __scratch_y("main") static void MainCore0(void) {
-  // We are now running from RAM so that the cartridge interface has exclusive
-  // access to flash. Because we rely on constant flash access time there is no
-  // need to keep the XIP cache so lets disable it.
-  xip_ctrl_hw->ctrl = 0;
-
   // multicore_launch_core1(MainCore1);
   MainCore1();
 
