@@ -27,7 +27,7 @@
 #define SM_DATA_OUT 1
 #define SM_DATA_IN 2
 
-#define DMA_CH_ADDR_OFFSET 0
+#define DMA_CH_FLASH_ADDR 0
 #define DMA_CH_FLASH 1
 
 static uint8_t g_rom_bank0[ROM_BANK_SIZE];
@@ -50,12 +50,10 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
                     volatile void *data_fifo) {
   dma_channel_config c;
 
-  // Step 1: Get the ROM address from the `read_addr` SM and use it as offset
-  //         into the current ROM bank. Directly write the offset to the read
-  //         register of the `DMA_CH_FLASH` dma channel. Use the atomic
-  //         set alias memory address to add the offset without overwriting.
-  dma_channel_claim(DMA_CH_ADDR_OFFSET);
-  c = dma_channel_get_default_config(DMA_CH_ADDR_OFFSET);
+  // Step 1: Get the flash address from the `read_addr` SM and write it to the
+  //         read register of the `DMA_CH_FLASH` dma channel.
+  dma_channel_claim(DMA_CH_FLASH_ADDR);
+  c = dma_channel_get_default_config(DMA_CH_FLASH_ADDR);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
@@ -63,10 +61,9 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
   // Chaining cannot be used here because it starts the next DMA before its
   // read register received the update. Use the trigger feature instead to
   // start step 2 with the write to the read register.
-  dma_channel_configure(
-      DMA_CH_ADDR_OFFSET, &c,
-      hw_set_alias(&dma_hw->ch[DMA_CH_FLASH].al3_read_addr_trig), addr_fifo, 1,
-      false);
+  dma_channel_configure(DMA_CH_FLASH_ADDR, &c,
+                        &dma_hw->ch[DMA_CH_FLASH].al3_read_addr_trig, addr_fifo,
+                        1, false);
 
   // Step 2: Copy from flash to `data_out` SM. A flash read takes 44 cycles
   //         and is the slowest operation of a bus access cycle.
@@ -76,8 +73,7 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
   dma_channel_configure(DMA_CH_FLASH, &c, data_fifo,
-                        NULL,  // Reset to beginning of current ROM bank by the
-                               // CPU and updated by DMA Step 1.
+                        NULL,  // Updated by DMA Step 1.
                         1, false);
 
   bus_ctrl_hw->priority =
@@ -116,8 +112,12 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
   sm_config_set_set_pins(&c, control_pins, CONTROL_BITS);
   sm_config_set_in_pins(&c, pins);
   sm_config_set_in_shift(&c, false,  // shift_direction=left
-                         true, 14);  // autopush enabled
+                         true, 32);  // autopush enabled
   pio_sm_init(pio, SM_ADDR, offset, &c);
+  // Init flash offset to bank 1 in ROM.
+  pio_sm_put(
+      pio, SM_ADDR,
+      ((uint32_t)xip_nocache_noalloc_alias(&g_rom[ROM_BANK_SIZE])) >> 14);
 
   // Configure the `data_out` state machine
   pio_sm_claim(pio, SM_DATA_OUT);
@@ -173,12 +173,9 @@ __noinline __scratch_x("main") static void MainCore1(void) {
     // Clear the FIFO to discard remaining data from previous cycles.
     pio_sm_clear_fifos(PIO_CARTRIDGE, SM_DATA_OUT);
 
-    // Reset the flash DMA channel read register to the start of the current
-    // ROM memory bank and trigger the DMA chain to read from flash in
-    // background as soon as a new address is available on the bus.
-    dma_channel_set_read_addr(
-        DMA_CH_FLASH, xip_nocache_noalloc_alias(&g_rom[ROM_BANK_SIZE]), false);
-    dma_channel_set_trans_count(DMA_CH_ADDR_OFFSET, 1, true);
+    // Trigger the DMA chain to read from flash in background as soon as a new
+    // address is available on the bus.
+    dma_channel_set_trans_count(DMA_CH_FLASH_ADDR, 1, true);
 
     // Wait until the `read_addr` SM is ready to give us the address.
     // We use the IRQ as additional barrier so that we do not accidentally
