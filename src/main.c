@@ -31,23 +31,9 @@
 #define DMA_CH_FLASH_ADDR 0
 #define DMA_CH_FLASH 1
 
-#define ROM_BANK_1_OFFSET
+#define ROM_BANK0 ((uint8_t *)XIP_SRAM_BASE)
 
-static uint8_t g_rom_bank0[ROM_BANK_SIZE];
 static uint8_t g_ram[RAM_SIZE];
-
-// Mirrors ROM bank 0 from flash to RAM.
-static void MirrorBank0(void) {
-  uint dma_ch_memcpy = dma_claim_unused_channel(true);
-  dma_channel_config c = dma_channel_get_default_config(dma_ch_memcpy);
-  channel_config_set_read_increment(&c, true);
-  channel_config_set_write_increment(&c, true);
-  channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
-  dma_channel_configure(dma_ch_memcpy, &c, g_rom_bank0, g_rom,
-                        ROM_BANK_SIZE / 4, true);
-  dma_channel_wait_for_finish_blocking(dma_ch_memcpy);
-  dma_channel_unclaim(dma_ch_memcpy);
-}
 
 static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
                     volatile void *data_fifo) {
@@ -116,7 +102,7 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
   pio_sm_init(pio, SM_ADDR, offset, &c);
 
   // Init flash offset to bank 1 in ROM.
-  uint32_t rom_bank1_offset = (uint32_t)&g_rom[ROM_BANK_SIZE] - XIP_BASE;
+  uint32_t rom_bank1_offset = (uint32_t)&g_rom[0] - XIP_BASE;
   pio_sm_put(pio, SM_ADDR,
              (rom_bank1_offset >> 14) |  // Flash offset
                  (0xA0 << 10));          // QSPI mode continuation bits
@@ -144,8 +130,6 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
   // DMA chain to connect the two state machines
   InitDma(pio_get_dreq(pio, SM_ADDR, false), &pio->rxf[SM_ADDR],
           &pio->txf[SM_DATA_OUT]);
-
-  MirrorBank0();
 }
 
 static inline void StartCartridgeInterface(PIO pio) {
@@ -158,7 +142,7 @@ __noinline __scratch_x("main") static void MainCore1(void) {
   // must not run any code from flash anymore. Disable the unused XIP cache and
   // repurpose it as additional SRAM to mirror ROM bank 0.
   xip_ctrl_hw->ctrl = 0;
-  // TODO: MirrorBank0();
+  memcpy(ROM_BANK0, g_rom, ROM_BANK_SIZE);
 
   // Read only 8bits (instead of 32bit) with each serial transfer.
   // Make sure that no code runs from flash anymore or it will crash now.
@@ -207,7 +191,7 @@ __noinline __scratch_x("main") static void MainCore1(void) {
         // We race the flash DMA and put data into the FIFO first.
         // DMA will still write to the FIFO but the SM ignores that and we
         // clear it from the FIFO at the beginning of the next cycle.
-        pio_sm_put(PIO_CARTRIDGE, SM_DATA_OUT, g_rom_bank0[addr]);
+        pio_sm_put(PIO_CARTRIDGE, SM_DATA_OUT, ROM_BANK0[addr]);
       } else {  // Bank 1..n
         // No action required, all handled by the flash DMA.
       }
