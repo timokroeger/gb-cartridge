@@ -9,6 +9,7 @@
 #include "hardware/dma.h"
 #include "hardware/pio.h"
 #include "hardware/structs/bus_ctrl.h"
+#include "hardware/structs/ssi.h"
 #include "hardware/structs/xip_ctrl.h"
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
@@ -30,6 +31,8 @@
 #define DMA_CH_FLASH_ADDR 0
 #define DMA_CH_FLASH 1
 
+#define ROM_BANK_1_OFFSET
+
 static uint8_t g_rom_bank0[ROM_BANK_SIZE];
 static uint8_t g_ram[RAM_SIZE];
 
@@ -50,31 +53,26 @@ static void InitDma(uint addr_dreq, const volatile void *addr_fifo,
                     volatile void *data_fifo) {
   dma_channel_config c;
 
-  // Step 1: Get the flash address from the `read_addr` SM and write it to the
-  //         read register of the `DMA_CH_FLASH` dma channel.
+  // Get the flash address from the `read_addr` SM and wite it to the SSI FIFO
+  // to request a flash memory read.
   dma_channel_claim(DMA_CH_FLASH_ADDR);
   c = dma_channel_get_default_config(DMA_CH_FLASH_ADDR);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
   channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
   channel_config_set_dreq(&c, addr_dreq);
-  // Chaining cannot be used here because it starts the next DMA before its
-  // read register received the update. Use the trigger feature instead to
-  // start step 2 with the write to the read register.
-  dma_channel_configure(DMA_CH_FLASH_ADDR, &c,
-                        &dma_hw->ch[DMA_CH_FLASH].al3_read_addr_trig, addr_fifo,
-                        1, false);
+  channel_config_set_chain_to(&c, DMA_CH_FLASH);
+  dma_channel_configure(DMA_CH_FLASH_ADDR, &c, &ssi_hw->dr0, addr_fifo, 1,
+                        false);
 
-  // Step 2: Copy from flash to `data_out` SM. A flash read takes 44 cycles
-  //         and is the slowest operation of a bus access cycle.
+  // Get the result from the SSI read after ~40 cycles.
   dma_channel_claim(DMA_CH_FLASH);
   c = dma_channel_get_default_config(DMA_CH_FLASH);
   channel_config_set_read_increment(&c, false);
   channel_config_set_write_increment(&c, false);
-  channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
-  dma_channel_configure(DMA_CH_FLASH, &c, data_fifo,
-                        NULL,  // Updated by DMA Step 1.
-                        1, false);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+  channel_config_set_dreq(&c, DREQ_XIP_SSIRX);
+  dma_channel_configure(DMA_CH_FLASH, &c, data_fifo, &ssi_hw->dr0, 1, false);
 
   bus_ctrl_hw->priority =
       BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
@@ -111,13 +109,17 @@ static void InitCartridgeInterface(PIO pio, uint pins) {
   c = read_addr_program_get_default_config(offset);
   sm_config_set_set_pins(&c, control_pins, CONTROL_BITS);
   sm_config_set_in_pins(&c, pins);
-  sm_config_set_in_shift(&c, false,  // shift_direction=left
-                         true, 32);  // autopush enabled
+  sm_config_set_in_shift(&c, false,    // shift_direction=left
+                         true, 32);    // autopush enabled
+  sm_config_set_out_shift(&c, true,    // shift_direction=right
+                          false, 32);  // autopull enabled
   pio_sm_init(pio, SM_ADDR, offset, &c);
+
   // Init flash offset to bank 1 in ROM.
-  pio_sm_put(
-      pio, SM_ADDR,
-      ((uint32_t)xip_nocache_noalloc_alias(&g_rom[ROM_BANK_SIZE])) >> 14);
+  uint32_t rom_bank1_offset = (uint32_t)&g_rom[ROM_BANK_SIZE] - XIP_BASE;
+  pio_sm_put(pio, SM_ADDR,
+             (rom_bank1_offset >> 14) |  // Flash offset
+                 (0xA0 << 10));          // QSPI mode continuation bits
 
   // Configure the `data_out` state machine
   pio_sm_claim(pio, SM_DATA_OUT);
@@ -157,6 +159,17 @@ __noinline __scratch_x("main") static void MainCore1(void) {
   // repurpose it as additional SRAM to mirror ROM bank 0.
   xip_ctrl_hw->ctrl = 0;
   // TODO: MirrorBank0();
+
+  // Read only 8bits (instead of 32bit) with each serial transfer.
+  // Make sure that no code runs from flash anymore or it will crash now.
+  // This reduces flash access times by 12 cycles when only the least
+  // significant byte is required.
+  // Leave all other settings as configured by boot2.
+  ssi_hw->ssienr = 0;
+  hw_write_masked(&ssi_hw->ctrlr0, (7 << SSI_CTRLR0_DFS_32_LSB),
+                  SSI_CTRLR0_DFS_32_BITS);
+  ssi_hw->dmacr = SSI_DMACR_RDMAE_BITS;
+  ssi_hw->ssienr = 1;
 
   StartCartridgeInterface(PIO_CARTRIDGE);
 

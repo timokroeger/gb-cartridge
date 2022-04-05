@@ -49,7 +49,9 @@
     ; Update the flash read offset (ROM base + ROM bank number)
     pull noblock            ; When no data available: `mov osr, x`
     mov x, osr              ; Store ROM bank in X
-    in x, 18
+
+    ; ROM bank address in upper most bits
+    out isr, 10
 
     ; PICO clock = 125MHz
     ; GB clock = 4^22Hz = ~4Mhz
@@ -72,7 +74,8 @@
     set pins, ADDR_HI [1]   ;                                          cycle 15
     in pins, 6              ; A13-A8                                   cycle 17
     set pins, ADDR_LO [1]   ;                                          cycle 18
-    in pins, 8 [8]          ; A7-A0, autopush                          cycle 20
+    in pins, 8              ; A7-A0                                    cycle 20
+    in osr, 8 [7]           ; Mode continuation bits, autopush         cycle 21
     ; DMA flash access now runs in parallel
 
     ; The Gameboy updates the A15 or and #CS lines on the second rising GB
@@ -100,7 +103,7 @@
     ; translates to a cycle count of 89.
     ;
     ; For flash access the loop of
-    ; `read_addr` RX FIFO -> DMA chain -> `data_out` TX FIFO
+    ; `read_addr` RX FIFO -> DMA -> SSI -> DMA -> `data_out` TX FIFO
     ; takes either 58 or 59 cycles as measured with a simple test SM:
     ; ``` pio
     ; push side 1
